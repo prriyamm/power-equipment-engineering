@@ -278,3 +278,37 @@ class Enclosure(unittest.TestCase):
         r = analyse(CableBusInput(**self.BASE))
         self.assertEqual(r.enclosure_loss_w, 0)
         self.assertIn("side 1 m", r.field_ut)
+
+
+class SwitchgearBus(unittest.TestCase):
+    def test_single_bar_rating_matches_din_43671_order(self):
+        # DIN 43671 (memory, UNVERIFIED): 100 x 10 mm Cu, 35 C ambient, 30 K rise, AC:
+        # bare ~1600-1700 A, painted ~1800-1900 A. Loose +/-15 % band.
+        from pecalc.switchgear import BusInput, analyse_bus
+        base = dict(bar_thickness_mm=10, bar_width_mm=100, bars_per_phase=1, phase_spacing_mm=200,
+                    ambient_c=35, max_rise_c=30, current_a=1500)
+        bare = analyse_bus(BusInput(**base, finish="bare")).rated_current_at_limit_a
+        painted = analyse_bus(BusInput(**base, finish="painted")).rated_current_at_limit_a
+        self.assertAlmostEqual(bare / 1650, 1, delta=0.15)
+        self.assertAlmostEqual(painted / 1850, 1, delta=0.15)
+        self.assertGreater(painted, bare)
+
+    def test_fault_force_matches_classic_phase_pack_formula(self):
+        from pecalc.forces import peak_factor
+        from pecalc.switchgear import BusInput, analyse_bus
+        r = analyse_bus(BusInput(bars_per_phase=1, phase_spacing_mm=300, fault_ka=50, x_over_r=15))
+        classic = 0.866 * 2e-7 * (peak_factor(15) * 50e3) ** 2 / 0.3
+        self.assertAlmostEqual(r.peak_force_n_per_m / classic, 1, delta=0.05)
+
+    def test_edge_to_edge_is_stiffer_against_phase_forces(self):
+        from pecalc.switchgear import BusInput, analyse_bus
+        f2f = analyse_bus(BusInput(fault_ka=65, support_span_m=0.6))
+        e2e = analyse_bus(BusInput(fault_ka=65, support_span_m=0.6, orientation="edge_to_edge"))
+        self.assertGreater(f2f.bending_stress_mpa, 5 * e2e.bending_stress_mpa)
+        self.assertGreater(e2e.max_span_m, f2f.max_span_m)
+
+    def test_ac_resistance_ratio_and_lamination_sharing(self):
+        from pecalc.switchgear import BusInput, analyse_bus
+        r = analyse_bus(BusInput(bars_per_phase=2))
+        self.assertTrue(1.0 < r.rac_over_rdc < 1.6)
+        self.assertAlmostEqual(sum(r.lamination_share_pct) / 2, 100, delta=3)

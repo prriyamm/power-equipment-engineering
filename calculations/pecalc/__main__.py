@@ -8,6 +8,7 @@ import sys
 from .ampacity import DataStatusError
 from .cablebus import CableBusInput, analyse
 from .lugs import LugInput, select_lugs
+from .switchgear import BusInput, analyse_bus
 from .sizing import FeederInput, size_feeder
 
 FT = 0.3048
@@ -132,6 +133,35 @@ def lugs(a: argparse.Namespace) -> int:
     return 0 if r.passed else 1
 
 
+def bus(a: argparse.Namespace) -> int:
+    inp = BusInput(current_a=a.current, voltage_v=a.voltage, standard=a.standard, material=a.material,
+                   bar_thickness_mm=a.thickness, bar_width_mm=a.width, bars_per_phase=a.bars,
+                   bar_gap_mm=a.gap, phase_spacing_mm=a.phase_spacing, orientation=a.orientation,
+                   finish=a.finish, ambient_c=a.ambient, internal_air_rise_c=a.air_rise, max_rise_c=a.max_rise,
+                   fault_ka=a.fault_ka, x_over_r=a.xr, support_span_m=a.span, support_condition=a.support,
+                   yield_mpa=a.yield_mpa, support_rating_n=a.support_rating)
+    r = analyse_bus(inp)
+    if a.json:
+        print(r.to_json())
+        return 0 if r.passed else 1
+    print(f"Switchgear bus - {inp.standard}, {inp.current_a:g} A, {inp.bars_per_phase} x "
+          f"{inp.bar_thickness_mm} x {inp.bar_width_mm} mm {inp.material} per phase, {inp.orientation}, "
+          f"phase spacing {inp.phase_spacing_mm} mm")
+    print(f"\nRESULT: {'PASS' if r.passed else 'FAIL'}")
+    print(f"  Temperature rise {r.rise_c} C at {inp.current_a:g} A; rating at {inp.max_rise_c} C rise: "
+          f"{r.rated_current_at_limit_a} A")
+    print(f"  Rac/Rdc {r.rac_over_rdc}, loss {r.loss_w_per_m_per_phase} W/m per phase, "
+          f"lamination currents {r.lamination_share_pct} % of equal share")
+    if r.peak_force_n_per_m is not None:
+        print(f"  Fault: {r.peak_force_n_per_m:.0f} N/m on a phase, bending stress {r.bending_stress_mpa} MPa, "
+              f"support load {r.support_load_n:.0f} N, max span {r.max_span_m} m")
+    for c in r.checks:
+        print(_row(c))
+    for n in r.notes:
+        print(f"Note: {n}")
+    return 0 if r.passed else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="pecalc", description="Power equipment engineering calculations")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -215,6 +245,30 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--one-sided", action="store_true", help="lugs on one face of the pad only")
     g.add_argument("--json", action="store_true")
     g.set_defaults(func=lugs, ambient=0)
+
+    b = sub.add_parser("bus", help="check switchgear / switchboard bus bars")
+    b.add_argument("--current", type=float, required=True)
+    b.add_argument("--voltage", type=float, default=600.0)
+    b.add_argument("--standard", default="UL 891")
+    b.add_argument("--material", choices=["Cu", "Al"], default="Cu")
+    b.add_argument("--thickness", type=float, required=True, help="bar thickness, mm")
+    b.add_argument("--width", type=float, required=True, help="bar width, mm")
+    b.add_argument("--bars", type=int, default=1, help="laminations per phase")
+    b.add_argument("--gap", type=float, help="gap between laminations, mm (default = thickness)")
+    b.add_argument("--phase-spacing", type=float, required=True, help="centre-to-centre, mm")
+    b.add_argument("--orientation", choices=["face_to_face", "edge_to_edge"], default="face_to_face")
+    b.add_argument("--finish", choices=["bare", "tin", "silver", "painted"], default="tin")
+    b.add_argument("--ambient", type=float, default=40.0)
+    b.add_argument("--air-rise", type=float, default=0.0, help="enclosure internal air rise, C")
+    b.add_argument("--max-rise", type=float, default=65.0, help="allowable rise per product standard, C")
+    b.add_argument("--fault-ka", type=float)
+    b.add_argument("--xr", type=float, default=15.0)
+    b.add_argument("--span", type=float, default=0.6, help="support spacing, m")
+    b.add_argument("--support", choices=["continuous", "pinned", "fixed"], default="continuous")
+    b.add_argument("--yield-mpa", type=float)
+    b.add_argument("--support-rating", type=float, help="support/insulator rated load, N")
+    b.add_argument("--json", action="store_true")
+    b.set_defaults(func=bus)
 
     a = p.parse_args(argv)
     if a.ambient is None:

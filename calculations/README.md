@@ -1,6 +1,6 @@
 # pecalc: power equipment engineering calculations
 
-The calculation engine of the platform described in [../ARCHITECTURE.md](../ARCHITECTURE.md). Plain Python 3.10+, no extra packages; runs the same on Windows and Linux.
+The calculation engine of the platform described in [../ARCHITECTURE.md](../ARCHITECTURE.md). Plain Python 3.10+, no extra packages; runs the same on Windows and Linux. If numpy is installed it is used automatically to speed up large solves.
 
 ## Run
 
@@ -9,6 +9,7 @@ From this folder (`calculations/`):
 ```
 python3 -m pecalc feeder --voltage 480 --continuous 400 --length 100
 python3 -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 4 --length 200 --fault-ka 65 --xr 20
+python3 -m pecalc bus --current 3000 --thickness 6.35 --width 152.4 --bars 3 --phase-spacing 200 --orientation edge_to_edge --fault-ka 65 --air-rise 15
 python3 -m pecalc cablebus --voltage 15000 --current 2000 --size 750 --per-phase 3 --insulation EPR \
     --insulation-mm 7.2 --shield-mm 0.13 --jacket-mm 2 --shield-bonding both_ends --length 200 --fault-ka 40
 ```
@@ -32,6 +33,7 @@ python3 -m unittest discover -s tests -v
 | `forces.py` | time-domain short-circuit forces on any conductor layout (worst case over inception angle) |
 | `thermal.py` | calculated ampacity: IEC 60287 / Neher-McGrath thermal model for cables in free air, dielectric loss, shield loss factor |
 | `lugs.py` | lug style, material, stud and hole pattern, quantity per termination, pad capacity, NEC 110.14(C) / CEC 4-006 terminal temperature; part/die/torque from `data/lug_catalog.json` |
+| `switchgear.py` | switchgear / switchboard bus: filament model for Rac/Rdc and lamination sharing, temperature rise (convection + radiation), short-circuit force per phase pack, bar bending stress, support load and max span |
 | `field.py` | magnetic flux density (2-D Biot-Savart, RMS resultant) around any conductor set; ICNIRP reference levels |
 | `cablebus.py` | cable bus design check, any voltage: layout, phase pattern search, sharing, ampacity (table / datasheet / calculated per cable), VD, losses, shield losses, aluminum enclosure induced currents and loss, magnetic field, fault forces |
 
