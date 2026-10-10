@@ -102,8 +102,19 @@ def impedance_matrix(conductors: list[Conductor], freq: float = 60.0,
     return z
 
 
+try:  # optional fast path; the engine has no required dependencies
+    import numpy as _np
+except ImportError:  # pragma: no cover - depends on environment
+    _np = None
+
+
 def solve_complex(a: list[list[complex]], b: list[complex]) -> list[complex]:
-    """Gaussian elimination with partial pivoting."""
+    """Solve a dense complex system: numpy if installed, else Gaussian elimination."""
+    if _np is not None and len(b) > 40:
+        try:
+            return [complex(v) for v in _np.linalg.solve(_np.array(a, dtype=complex), _np.array(b, dtype=complex))]
+        except _np.linalg.LinAlgError as e:
+            raise ValueError("Singular system: check groups and constraints") from e
     n = len(b)
     m = [row[:] + [b[i]] for i, row in enumerate(a)]
     for col in range(n):
@@ -111,14 +122,18 @@ def solve_complex(a: list[list[complex]], b: list[complex]) -> list[complex]:
         if abs(m[piv][col]) < 1e-30:
             raise ValueError("Singular system: check groups and constraints")
         m[col], m[piv] = m[piv], m[col]
+        prow = m[col]
+        pivot = prow[col]
+        tail = prow[col:]
         for r in range(col + 1, n):
-            f = m[r][col] / m[col][col]
+            row = m[r]
+            f = row[col] / pivot
             if f:
-                for k in range(col, n + 1):
-                    m[r][k] -= f * m[col][k]
+                row[col:] = [x - f * y for x, y in zip(row[col:], tail)]
     x = [0j] * n
     for r in range(n - 1, -1, -1):
-        x[r] = (m[r][n] - sum(m[r][k] * x[k] for k in range(r + 1, n))) / m[r][r]
+        row = m[r]
+        x[r] = (row[n] - sum(row[k] * x[k] for k in range(r + 1, n))) / row[r]
     return x
 
 

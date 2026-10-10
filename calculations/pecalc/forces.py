@@ -38,6 +38,8 @@ class ForceResult:
     worst_n_per_m: float
     peak_current_ka: float          # largest instantaneous phase current
     x_over_r: float
+    body_peak_n_per_m: dict | None = None   # worst-case resultant per body (bar / phase pack)
+    body_peak_xy: dict | None = None        # (|Fx| max, |Fy| max) per body
 
     @property
     def worst_lbf_per_ft(self) -> float:
@@ -46,10 +48,14 @@ class ForceResult:
 
 def fault_forces(conductors: list[Conductor], share: dict[int, complex], fault_ka_rms: float,
                  x_over_r: float, freq: float = 60.0, phases: tuple[str, ...] = ("A", "B", "C"),
-                 cycles: float = 1.0, steps_per_cycle: int = 96, angle_steps: int = 24) -> ForceResult:
+                 cycles: float = 1.0, steps_per_cycle: int = 96, angle_steps: int = 24,
+                 bodies: dict[int, str] | None = None) -> ForceResult:
     """share[i] = conductor i's complex fraction of its phase current (from solve_sharing).
 
     Conductors whose group is not in `phases` (e.g. shields) are ignored.
+    bodies maps conductor index -> body name (e.g. filaments of one bar); the
+    vector sum per body is tracked, so a bar split into filaments gets its
+    true resultant (internal filament forces cancel in pairs).
     """
     w = 2 * math.pi * freq
     tau = x_over_r / w
@@ -67,6 +73,9 @@ def fault_forces(conductors: list[Conductor], share: dict[int, complex], fault_k
                 geo[i, j] = (2e-7 / d, dx / d, dy / d)
 
     worst = [0.0] * len(conductors)
+    body_names = sorted(set(bodies.values())) if bodies else []
+    body_worst = {b: 0.0 for b in body_names}
+    body_xy = {b: [0.0, 0.0] for b in body_names}
     i_peak = 0.0
     n_t = int(cycles * steps_per_cycle) + 1
     for a_step in range(angle_steps):
@@ -82,6 +91,7 @@ def fault_forces(conductors: list[Conductor], share: dict[int, complex], fault_k
                 th = alpha - phi - 2 * math.pi * k / 3 + math.atan2(s.imag, s.real)
                 inst[i] = abs(s) * amp * (math.sin(w * t + th) - math.sin(th) * decay)
                 i_peak = max(i_peak, abs(inst[i]) / abs(s) if abs(s) > 1e-12 else 0)
+            acc = {b: [0.0, 0.0] for b in body_names}
             for i in idx:
                 fx = fy = 0.0
                 for j in idx:
@@ -93,5 +103,14 @@ def fault_forces(conductors: list[Conductor], share: dict[int, complex], fault_k
                 mag = math.hypot(fx, fy)
                 if mag > worst[i]:
                     worst[i] = mag
+                if bodies and i in bodies:
+                    a = acc[bodies[i]]
+                    a[0] += fx
+                    a[1] += fy
+            for b, (fx, fy) in acc.items():
+                body_worst[b] = max(body_worst[b], math.hypot(fx, fy))
+                body_xy[b][0] = max(body_xy[b][0], abs(fx))
+                body_xy[b][1] = max(body_xy[b][1], abs(fy))
     w_i = max(range(len(worst)), key=worst.__getitem__)
-    return ForceResult(worst, w_i, worst[w_i], i_peak / 1000, x_over_r)
+    return ForceResult(worst, w_i, worst[w_i], i_peak / 1000, x_over_r,
+                       body_worst or None, {b: tuple(v) for b, v in body_xy.items()} or None)
