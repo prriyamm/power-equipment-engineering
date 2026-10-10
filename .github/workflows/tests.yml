@@ -36,3 +36,15 @@ jobs:
       - name: Run tests with numpy
         working-directory: calculations
         run: python -m unittest discover -s tests -v
+
+  app-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install app requirements
+        run: python -m pip install -r app/requirements.txt
+      - name: Run the desktop app's self-test from source
+        run: python app/main.py --selftest

@@ -131,7 +131,7 @@ text-align:left;vertical-align:top}th{background:#f2f2f2}
 """
 
 
-def render(case: Case, result) -> str:
+def render(case: Case, result, results_first: bool = False) -> str:
     module = case.module
     checks_html, ok = _checks(_all_checks(module, result))
     ok = ok and bool(getattr(result, "passed", True)) and not (module == "feeder" and not result.recommended)
@@ -155,12 +155,12 @@ def render(case: Case, result) -> str:
         parts.append("<div class='banner warn'>This calculation uses data or methods marked "
                      f"{' / '.join(flagged)}. Verify them against the licensed code or standard before "
                      "relying on the result.</div>")
-    parts.append("<h2>Inputs</h2>" + _kv(inputs))
-    for title, body in _sections(module, result):
-        parts.append(f"<h2>{_esc(title)}</h2>{body}")
-    parts.append("<h2>Checks</h2>" + checks_html)
+    body = [f"<h2>{_esc(title)}</h2>{html_}" for title, html_ in _sections(module, result)]
+    body.append("<h2>Checks</h2>" + checks_html)
     if notes:
-        parts.append("<h2>Notes</h2><ul>" + "".join(f"<li>{_esc(n)}</li>" for n in notes) + "</ul>")
+        body.append("<h2>Notes</h2><ul>" + "".join(f"<li>{_esc(n)}</li>" for n in notes) + "</ul>")
+    inputs_html = "<h2>Inputs</h2>" + _kv(inputs)
+    parts += (body + [inputs_html]) if results_first else ([inputs_html] + body)
     parts.append("<h2>Sign-off</h2>" + "<table class='sign'><tr><th>Prepared by</th><th>Checked by</th>"
                  "<th>Approved (P.Eng. / PE seal)</th></tr><tr><td></td><td></td><td></td></tr>"
                  "<tr><td>Date:</td><td>Date:</td><td>Date:</td></tr></table>")
