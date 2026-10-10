@@ -62,7 +62,10 @@ def cablebus(a: argparse.Namespace) -> int:
                         conductors_per_phase=a.per_phase, tiers=a.tiers, cable_od_mm=a.od,
                         spacing_mm=a.spacing, tier_spacing_mm=a.tier_spacing, pattern=a.pattern,
                         insulation_temp_c=a.insulation_temp, terminal_temp_c=a.terminal_temp, ambient_c=a.ambient,
+                        ampacity_method=a.ampacity_method,
                         cable_ampacity_a=a.cable_ampacity, cable_ampacity_ambient_c=a.cable_ampacity_ambient,
+                        insulation=a.insulation, insulation_mm=a.insulation_mm, shield_mm=a.shield_mm,
+                        jacket_mm=a.jacket_mm, jacket=a.jacket,
                         shield_bonding=a.shield_bonding, shield_area_mm2=a.shield_area,
                         shield_mean_diameter_mm=a.shield_diameter, fault_ka=a.fault_ka, x_over_r=a.xr,
                         support_span_m=a.support_span, max_vd_pct=a.max_vd,
@@ -138,6 +141,13 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--tier-spacing", type=float, help="centre spacing between tiers, mm")
     c.add_argument("--pattern", default="auto", help="e.g. ABCCBA or ABCCBA/CBAABC, default: try several")
     c.add_argument("--terminal-temp", type=int, choices=[60, 75, 90], default=90)
+    c.add_argument("--ampacity-method", choices=["auto", "table", "datasheet", "calculated"], default="auto",
+                   help="auto: datasheet if given, else code table (<=2000 V), else IEC 60287 calculation")
+    c.add_argument("--insulation", choices=["XLPE", "EPR", "PVC", "XHHW", "RW90"], default="XLPE")
+    c.add_argument("--insulation-mm", type=float, help="insulation wall incl. screens, mm (enables calculation)")
+    c.add_argument("--shield-mm", type=float, default=0.0, help="metallic shield thickness, mm")
+    c.add_argument("--jacket-mm", type=float, default=0.0, help="jacket thickness, mm")
+    c.add_argument("--jacket", choices=["PVC", "PE"], default="PVC")
     c.add_argument("--cable-ampacity", type=float, help="datasheet free-air rating per cable, A")
     c.add_argument("--cable-ampacity-ambient", type=float, default=40.0)
     c.add_argument("--shield-bonding", choices=["none", "single_point", "both_ends"], default="none")
