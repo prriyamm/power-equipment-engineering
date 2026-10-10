@@ -7,6 +7,7 @@ import sys
 
 from .ampacity import DataStatusError
 from .cablebus import CableBusInput, analyse
+from .lugs import LugInput, select_lugs
 from .sizing import FeederInput, size_feeder
 
 FT = 0.3048
@@ -45,6 +46,11 @@ def feeder(a: argparse.Namespace) -> int:
         print(f"  R {o.r_ohm_per_km} ohm/km, X {o.x_ohm_per_km} ohm/km per conductor")
         for c in o.checks:
             print(_row(c.__dict__))
+        if r.lugs:
+            print("\nLugs (one end):")
+            for l in r.lugs.lines:
+                print(f"  {l.quantity} x {l.conductor}: {l.style}, {l.stud_in} in stud"
+                      f"{', ' + l.hole_spacing_in + ' in centres' if l.hole_spacing_in else ''}")
         if r.alternatives:
             print("\nAlternatives (all pass):")
             for alt in r.alternatives:
@@ -97,6 +103,31 @@ def cablebus(a: argparse.Namespace) -> int:
     return 0 if r.passed else 1
 
 
+def lugs(a: argparse.Namespace) -> int:
+    inp = LugInput(code=a.code, size=a.size, material=a.material, sets_per_phase=a.sets, phases=a.phases,
+                   neutral=a.neutral, neutral_size=a.neutral_size, ground_size=a.ground_size,
+                   circuit_current_a=a.current, equipment_terminal_temp_c=a.terminal_temp,
+                   termination=a.termination, pad_positions=a.pad_positions, pad_two_sided=not a.one_sided)
+    r = select_lugs(inp)
+    if a.json:
+        print(r.to_json())
+        return 0 if r.passed else 1
+    print(f"Lug selection - {inp.code}, {inp.sets_per_phase} x {inp.size} {inp.material} per phase, "
+          f"{inp.circuit_current_a:g} A, termination: {inp.termination}")
+    print(f"  Termination temperature: {r.terminal_temp_c} C ({r.terminal_temp_basis})")
+    for l in r.lines:
+        extra = ", ".join(x for x in (l.part_no and f"part {l.part_no}", l.die and f"die {l.die}",
+                                      l.torque and f"torque {l.torque}") if x)
+        print(f"  {l.quantity:3d} x {l.terminal}: {l.conductor} - {l.style}; {l.lug_material}; stud {l.stud_in} in"
+              f"{'; ' + l.hole_spacing_in + ' in centres' if l.hole_spacing_in else ''}{'; ' + extra if extra else ''}")
+    print(f"  Total lugs per end: {r.total_lugs}")
+    for c in r.checks:
+        print(_row(c))
+    for n in r.notes:
+        print(f"Note: {n}")
+    return 0 if r.passed else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="pecalc", description="Power equipment engineering calculations")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -121,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--phases", type=int, choices=[1, 3], default=3)
     f.add_argument("--continuous", type=float, default=0.0, help="continuous load, A")
     f.add_argument("--noncontinuous", type=float, default=0.0, help="non-continuous load, A")
-    f.add_argument("--terminal-temp", type=int, choices=[60, 75, 90], default=75)
+    f.add_argument("--terminal-temp", type=int, choices=[60, 75, 90],
+                   help="equipment termination rating; default per NEC 110.14(C) / CEC 4-006")
     f.add_argument("--installation", choices=["raceway", "free_air"], default="raceway")
     f.add_argument("--ccc", type=int, default=3, help="current-carrying conductors per raceway")
     f.add_argument("--conduit", choices=["pvc", "aluminum", "steel"], default="pvc")
@@ -156,6 +188,23 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--xr", type=float, default=15.0, help="X/R ratio at the fault point")
     c.add_argument("--support-span", type=float, default=0.9144, help="support/block spacing, m")
     c.set_defaults(func=cablebus)
+
+    g = sub.add_parser("lugs", help="select lugs for a termination")
+    g.add_argument("--code", choices=["NEC", "CEC"], default="NEC")
+    g.add_argument("--size", required=True)
+    g.add_argument("--material", choices=["Cu", "Al"], default="Cu")
+    g.add_argument("--sets", type=int, default=1, help="parallel sets per phase")
+    g.add_argument("--phases", type=int, choices=[1, 3], default=3)
+    g.add_argument("--current", type=float, required=True, help="circuit rating, A")
+    g.add_argument("--neutral", action="store_true")
+    g.add_argument("--neutral-size")
+    g.add_argument("--ground-size")
+    g.add_argument("--terminal-temp", type=int, choices=[60, 75, 90])
+    g.add_argument("--termination", choices=["bus", "stud", "breaker"], default="bus")
+    g.add_argument("--pad-positions", type=int, help="2-hole positions per phase on the pad")
+    g.add_argument("--one-sided", action="store_true", help="lugs on one face of the pad only")
+    g.add_argument("--json", action="store_true")
+    g.set_defaults(func=lugs, ambient=0)
 
     a = p.parse_args(argv)
     if a.ambient is None:

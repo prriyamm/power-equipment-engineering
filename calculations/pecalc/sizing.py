@@ -27,7 +27,7 @@ class FeederInput:
     length_m: float = 30.0            # one-way length
     material: str = "Cu"
     insulation_temp_c: int = 90
-    terminal_temp_c: int = 75
+    terminal_temp_c: int | None = None  # None: NEC 110.14(C)(1) / CEC 4-006 default by current
     installation: str = "raceway"     # "raceway" or "free_air"
     ambient_c: float = 30.0
     current_carrying_per_raceway: int = 3
@@ -87,6 +87,7 @@ class FeederResult:
     recommended: Option | None
     alternatives: list[Option]
     notes: list[str]
+    lugs: object | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, default=str)
@@ -195,6 +196,8 @@ def size_feeder(inp: FeederInput) -> FeederResult:
         raise ValueError("load current must be positive")
     if inp.voltage_v > 2000:
         raise ValueError("This module covers 0-2000 V conductors; medium-voltage tables are not loaded yet")
+    if inp.terminal_temp_c is None:
+        inp.terminal_temp_c = 60 if inp.load_a <= 100 else 75
     status = amp.check_status(inp.code, inp.allow_placeholder_data)
     info = amp.table_info(inp.code, inp.installation)
 
@@ -217,4 +220,11 @@ def size_feeder(inp: FeederInput) -> FeederResult:
     notes.append("Overcurrent device selection and protection (NEC 240.4 / CEC 14-104) are not checked here.")
     if not options:
         notes.append("No conductor size passes every check within the allowed number of sets.")
-    return FeederResult(inp, status, info.table_name, options[0] if options else None, options[1:6], notes)
+    lugs = None
+    if options:
+        from .lugs import LugInput, select_lugs
+        best = options[0]
+        lugs = select_lugs(LugInput(code=inp.code, size=best.size, material=inp.material, sets_per_phase=best.sets,
+                                    phases=inp.phases, circuit_current_a=inp.load_a,
+                                    equipment_terminal_temp_c=inp.terminal_temp_c))
+    return FeederResult(inp, status, info.table_name, options[0] if options else None, options[1:6], notes, lugs)

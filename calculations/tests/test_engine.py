@@ -213,3 +213,35 @@ class CableBusCalculatedMV(unittest.TestCase):
         be = analyse(CableBusInput(**self.BASE, conductors_per_phase=3, shield_bonding="both_ends"))
         self.assertLess(min(c.ampacity_a for c in be.conductors), min(c.ampacity_a for c in sp.conductors))
         self.assertGreater(be.max_loading_pct, sp.max_loading_pct)
+
+
+class Lugs(unittest.TestCase):
+    def test_default_terminal_temperature_rule(self):
+        from pecalc.lugs import default_terminal_temp
+        # NEC 110.14(C)(1) / CEC 4-006: <= 100 A or 14-1 AWG -> 60 C; otherwise 75 C.
+        self.assertEqual(default_terminal_temp("NEC", 90, "4")[0], 60)
+        self.assertEqual(default_terminal_temp("NEC", 400, "500")[0], 75)
+        self.assertEqual(default_terminal_temp("CEC", 400, "1")[0], 60)
+
+    def test_quantities_and_pad_capacity(self):
+        from pecalc.lugs import LugInput, select_lugs
+        r = select_lugs(LugInput(size="500", sets_per_phase=4, circuit_current_a=1600, neutral=True,
+                                 ground_size="3/0", pad_positions=2))
+        self.assertEqual(r.total_lugs, 3 * 4 + 4 + 4)
+        self.assertTrue(r.passed)
+        r = select_lugs(LugInput(size="750", sets_per_phase=6, circuit_current_a=4000, pad_positions=2))
+        self.assertFalse(r.passed)
+
+    def test_style_by_size_and_termination(self):
+        from pecalc.lugs import LugInput, select_lugs
+        big = select_lugs(LugInput(size="250", circuit_current_a=255)).lines[0]
+        small = select_lugs(LugInput(size="6", circuit_current_a=65)).lines[0]
+        brk = select_lugs(LugInput(size="250", circuit_current_a=255, termination="breaker")).lines[0]
+        self.assertIn("2-hole", big.style)
+        self.assertEqual(big.hole_spacing_in, "1-3/4")
+        self.assertIn("1-hole", small.style)
+        self.assertIn("mechanical", brk.style)
+
+    def test_feeder_includes_lug_schedule(self):
+        r = size_feeder(FeederInput(voltage_v=480, continuous_a=400, length_m=30.48))
+        self.assertEqual(r.lugs.lines[0].quantity, 3 * r.recommended.sets)

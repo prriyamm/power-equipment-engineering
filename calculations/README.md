@@ -31,6 +31,7 @@ python3 -m unittest discover -s tests -v
 | `impedance.py` | multi-conductor impedance (Carson), current sharing among paralleled conductors, bonded shield circulating currents |
 | `forces.py` | time-domain short-circuit forces on any conductor layout (worst case over inception angle) |
 | `thermal.py` | calculated ampacity: IEC 60287 / Neher-McGrath thermal model for cables in free air, dielectric loss, shield loss factor |
+| `lugs.py` | lug style, material, stud and hole pattern, quantity per termination, pad capacity, NEC 110.14(C) / CEC 4-006 terminal temperature; part/die/torque from `data/lug_catalog.json` |
 | `cablebus.py` | cable bus design check, any voltage: layout, phase pattern search, sharing, ampacity (table / datasheet / calculated per cable), VD, losses, shield losses, fault forces |
 
 ## Data status
@@ -45,7 +46,7 @@ CEC spot values gathered during research (unverified; confirm against CSA C22.1)
 
 ## Not yet included
 
-MV code tables, enclosure eddy losses, lug selection, overcurrent device coordination, solar radiation and cable-in-tray/conduit thermal models.
+MV code tables, enclosure eddy losses, wire bending space, overcurrent device coordination, solar radiation and cable-in-tray/conduit thermal models.
 
 ## Calculated ampacity note
 
