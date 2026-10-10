@@ -23,7 +23,16 @@ See [calculations/README.md](calculations/README.md) for every module and option
 
 ## Status
 
-Early development. The engine core, feeder sizing (NEC) and cable bus checks work and are tested against independent references. **Code-table values were entered from memory and are marked UNVERIFIED**; CEC tables are placeholders and are refused until real values are entered. Check the data against your licensed copies of the codes before relying on any result.
+Early development, usable for engineering review. Working and tested (60 reference tests, CI on Linux and Windows):
+
+- **Feeder & cable sizing** (NEC; CEC once its tables are entered) with lug schedule
+- **Cable bus** at any voltage: current sharing, table / datasheet / calculated (IEC 60287) ampacity, MV shield circulating currents, aluminum enclosure losses, magnetic field, fault forces
+- **Switchgear bus**: Rac/Rdc and lamination sharing, temperature rise, short-circuit bracing
+- **Transformer**: preliminary design, losses, impedance (tunable to a target %Z), efficiency incl. DOE test point, fault withstand
+- **Lug selection**, design case files and printable calculation packages
+- **Desktop app** (Power Equipment Studio) with Windows installer, Linux and macOS builds
+
+**Code-table values were entered from memory and are marked UNVERIFIED**; CEC tables are placeholders and are refused until real values are entered. Every report flags UNVERIFIED data. Check the data against your licensed copies of the codes before relying on any result.
 
 ## Important
 
