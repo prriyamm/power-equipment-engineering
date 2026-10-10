@@ -23,12 +23,17 @@ from dataclasses import asdict, dataclass, field
 
 from . import ampacity as amp
 from . import conductors as cond
+from .field import LIMITS_UT, b_rms_ut
 from .forces import N_PER_M_TO_LBF_PER_FT, fault_forces
 from .impedance import Conductor, Group, balanced_three_phase, solve_sharing
 from .thermal import CableConstruction, free_air_ampacity
 
 PHASES = ("A", "B", "C")
 CU_RHO20 = 1.7241e-8  # ohm m, annealed copper (shield tapes / wires)
+# Aluminum alloy resistivity at 20 C, ohm m, and temperature coefficient.
+# [UNVERIFIED: typical handbook values, 6063-T6 ~53 % IACS, 6061-T6 ~43 % IACS]
+AL_ALLOYS = {"6063-T6": 3.25e-8, "6061-T6": 3.99e-8, "1350": 2.82e-8}
+AL_ALPHA = 0.0040
 
 
 @dataclass
@@ -71,6 +76,18 @@ class CableBusInput:
     x_over_r: float = 15.0
     support_span_m: float = 0.9144     # block / support spacing along the run (36 in)
     max_vd_pct: float = 3.0
+    # Enclosure (optional): inside width/height around the conductor group.
+    # Side rails are continuous along the run; covers/bottom are included only
+    # when electrically continuous (covers_continuous=True).
+    enclosure_width_mm: float | None = None
+    enclosure_height_mm: float | None = None
+    side_thickness_mm: float = 6.35
+    cover_thickness_mm: float = 3.175
+    covers_continuous: bool = False
+    enclosure_alloy: str = "6063-T6"
+    enclosure_temp_c: float = 50.0
+    enclosure_filaments: int = 6           # filaments per side/cover for the induced-current model
+    field_distances_m: tuple[float, ...] = (0.3, 1.0)
     allow_placeholder_data: bool = False
 
 
@@ -108,6 +125,9 @@ class CableBusResult:
     conductor_loss_w: float
     shield_loss_w: float
     shield_current_a: float
+    enclosure_loss_w: float
+    enclosure_current_a: float
+    field_ut: dict
     fault_force_n_per_m: float | None
     fault_force_lbf_per_ft: float | None
     support_load_lbf: float | None
@@ -180,6 +200,48 @@ def build_layout(inp: CableBusInput, pattern: str, od: float) -> list[Conductor]
         rad = inp.shield_mean_diameter_mm / 2
         for c in list(out):
             out.append(Conductor(c.x_mm, c.y_mm, "SHIELD", rs, rad, f"S-{c.label}", tube_radius_mm=rad))
+    if inp.enclosure_width_mm:
+        out += enclosure_filaments(inp, out, od)
+    return out
+
+
+def enclosure_filaments(inp: CableBusInput, cores: list[Conductor], od: float) -> list[Conductor]:
+    """Thin-plate enclosure walls as parallel strips (bonded at both ends).
+
+    Captures longitudinal induced current in the housing; transverse eddy
+    currents within a strip are neglected (skin depth in Al at 60 Hz ~ 11 mm,
+    larger than typical wall thickness).
+    """
+    if inp.enclosure_alloy not in AL_ALLOYS:
+        raise ValueError(f"enclosure_alloy must be one of {sorted(AL_ALLOYS)}")
+    phases = [c for c in cores if c.group in PHASES]
+    xs = [c.x_mm for c in phases]
+    ys = [c.y_mm for c in phases]
+    xc, yc = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    w, h = inp.enclosure_width_mm, inp.enclosure_height_mm or (max(ys) - min(ys) + 2 * od)
+    if w < max(xs) - min(xs) + od or h < max(ys) - min(ys) + od:
+        raise ValueError(f"Enclosure {w:.0f} x {h:.0f} mm is smaller than the conductor group "
+                         f"({max(xs) - min(xs) + od:.0f} x {max(ys) - min(ys) + od:.0f} mm)")
+    rho = AL_ALLOYS[inp.enclosure_alloy] * (1 + AL_ALPHA * (inp.enclosure_temp_c - 20))
+    n = inp.enclosure_filaments
+    out = []
+
+    def strips(x0, y0, x1, y1, t, tag):
+        length = math.hypot(x1 - x0, y1 - y0)
+        seg = length / n
+        for k in range(n):
+            f = (k + 0.5) / n
+            out.append(Conductor(x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, "ENCLOSURE",
+                                 rho / (seg * t * 1e-6), 0.2235 * (seg + t), f"{tag}{k}"))
+
+    ts, tc = inp.side_thickness_mm, inp.cover_thickness_mm
+    xl, xr = xc - w / 2 - ts / 2, xc + w / 2 + ts / 2
+    strips(xl, yc - h / 2, xl, yc + h / 2, ts, "EL")
+    strips(xr, yc - h / 2, xr, yc + h / 2, ts, "ER")
+    if inp.covers_continuous:
+        yb, yt = yc - h / 2 - tc / 2, yc + h / 2 + tc / 2
+        strips(xc - w / 2, yt, xc + w / 2, yt, tc, "ET")
+        strips(xc - w / 2, yb, xc + w / 2, yb, tc, "EB")
     return out
 
 
@@ -187,6 +249,8 @@ def _groups(inp: CableBusInput, with_shields: bool) -> dict[str, Group]:
     g = balanced_three_phase(inp.current_a, inp.power_factor)
     if with_shields:
         g["SHIELD"] = Group("SHIELD", "bonded")
+    if inp.enclosure_width_mm:
+        g["ENCLOSURE"] = Group("ENCLOSURE", "bonded")
     return g
 
 
@@ -316,8 +380,21 @@ def analyse(inp: CableBusInput) -> CableBusResult:
     vd_pct = max((v_ph - abs(v_ph - d * inp.length_m)) / v_ph * 100
                  for d in res.group_drop_v_per_m.values())
     cond_loss = res.group_loss_w_per_m("phase") * inp.length_m
-    shield_loss = res.group_loss_w_per_m("bonded") * inp.length_m
+    shield_loss = sum(p for p, c in zip(res.losses_w_per_m, cs) if c.group == "SHIELD") * inp.length_m
+    encl_loss = sum(p for p, c in zip(res.losses_w_per_m, cs) if c.group == "ENCLOSURE") * inp.length_m
     shield_i = max((abs(res.currents[i]) for i, c in enumerate(cs) if c.group == "SHIELD"), default=0.0)
+    encl_i = max((abs(sum(res.currents[i] for i, c in enumerate(cs) if c.label.startswith(side)))
+                  for side in ("EL", "ER", "ET", "EB")), default=0.0) if inp.enclosure_width_mm else 0.0
+
+    # Magnetic field beside and above the group, measured from the outer surface.
+    xs = [c.x_mm for c in cs]
+    ys = [c.y_mm for c in cs]
+    right, top = max(xs) + od / 2, max(ys) + od / 2
+    xmid, ymid = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    field_ut = {}
+    for d in inp.field_distances_m:
+        field_ut[f"side {d:g} m"] = round(b_rms_ut(cs, res.currents, right + d * 1000, ymid), 2)
+        field_ut[f"top {d:g} m"] = round(b_rms_ut(cs, res.currents, xmid, top + d * 1000), 2)
 
     clauses = amp.CLAUSES[inp.code]
     checks = []
@@ -363,12 +440,25 @@ def analyse(inp: CableBusInput) -> CableBusResult:
         notes.append("MV cable selected with shield_bonding 'none': set 'single_point' or 'both_ends' to state the design.")
     if method == "table":
         notes.append(f"{inp.code} table data status: {amp.table_info(inp.code, 'free_air').status}.")
-    notes.append("Enclosure losses (eddy currents in the aluminum housing) are not yet included.")
+    if inp.enclosure_width_mm:
+        notes.append(f"Enclosure ({inp.enclosure_alloy}, sides{' + covers' if inp.covers_continuous else ' only'}): "
+                     f"induced current up to {encl_i:.0f} A per wall, loss {encl_loss/1000:.2f} kW "
+                     f"({encl_loss / max(cond_loss, 1e-9) * 100:.1f} % of conductor loss). Longitudinal circulating "
+                     "current only; transverse eddy and hysteresis (none in Al) not included.")
+    else:
+        notes.append("Enclosure not modelled (give enclosure_width_mm to include induced housing currents).")
+    if field_ut:
+        worst_b = max(field_ut.values())
+        notes.append("Magnetic field (RMS resultant) " + ", ".join(f"{k}: {v} uT" for k, v in field_ut.items()) +
+                     f". Reference levels at 60 Hz: ICNIRP 1998 public {LIMITS_UT['ICNIRP 1998 public']} uT, "
+                     f"occupational {LIMITS_UT['ICNIRP 1998 occupational']} uT"
+                     f"{' - EXCEEDS public level' if worst_b > LIMITS_UT['ICNIRP 1998 public'] else ''}.")
 
     width = max(r.x_mm for r in rows) + od
     height = max(r.y_mm for r in rows) + od
     return CableBusResult(inp, pattern, compared, round(width, 1), round(height, 1), rows, basis,
                           round(max_loading, 1), round(vd_pct, 3), round(cond_loss, 1), round(shield_loss, 1),
-                          round(shield_i, 1), None if f_nm is None else round(f_nm, 1),
+                          round(shield_i, 1), round(encl_loss, 1), round(encl_i, 1), field_ut,
+                          None if f_nm is None else round(f_nm, 1),
                           None if f_lbf is None else round(f_lbf, 1), None if support is None else round(support, 1),
                           checks, notes)

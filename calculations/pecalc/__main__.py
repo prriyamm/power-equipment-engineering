@@ -75,6 +75,9 @@ def cablebus(a: argparse.Namespace) -> int:
                         shield_bonding=a.shield_bonding, shield_area_mm2=a.shield_area,
                         shield_mean_diameter_mm=a.shield_diameter, fault_ka=a.fault_ka, x_over_r=a.xr,
                         support_span_m=a.support_span, max_vd_pct=a.max_vd,
+                        enclosure_width_mm=a.enclosure_width, enclosure_height_mm=a.enclosure_height,
+                        side_thickness_mm=a.side_mm, cover_thickness_mm=a.cover_mm,
+                        covers_continuous=a.covers_continuous, enclosure_alloy=a.alloy,
                         allow_placeholder_data=a.allow_placeholder_data)
     r = analyse(inp)
     if a.json:
@@ -86,7 +89,8 @@ def cablebus(a: argparse.Namespace) -> int:
     print(f"  Phase pattern: {r.pattern}   layout {r.layout_width_mm:.0f} x {r.layout_height_mm:.0f} mm (conductor envelope)")
     print(f"  Ampacity per cable: {r.ampacity_basis}")
     print(f"  Worst conductor loading {r.max_loading_pct} %, voltage drop {r.vd_pct} %, "
-          f"conductor loss {r.conductor_loss_w/1000:.2f} kW, shield loss {r.shield_loss_w/1000:.2f} kW")
+          f"conductor loss {r.conductor_loss_w/1000:.2f} kW, shield loss {r.shield_loss_w/1000:.2f} kW, "
+          f"enclosure loss {r.enclosure_loss_w/1000:.2f} kW")
     for c in r.checks:
         print(_row(c))
     print("\nConductor currents (A, % of equal share):")
@@ -187,6 +191,12 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--shield-diameter", type=float, help="shield mean diameter, mm")
     c.add_argument("--xr", type=float, default=15.0, help="X/R ratio at the fault point")
     c.add_argument("--support-span", type=float, default=0.9144, help="support/block spacing, m")
+    c.add_argument("--enclosure-width", type=float, help="enclosure inside width, mm (enables housing model)")
+    c.add_argument("--enclosure-height", type=float, help="enclosure inside height, mm")
+    c.add_argument("--side-mm", type=float, default=6.35, help="side rail thickness, mm")
+    c.add_argument("--cover-mm", type=float, default=3.175, help="cover thickness, mm")
+    c.add_argument("--covers-continuous", action="store_true", help="covers/bottom electrically continuous")
+    c.add_argument("--alloy", choices=["6063-T6", "6061-T6", "1350"], default="6063-T6")
     c.set_defaults(func=cablebus)
 
     g = sub.add_parser("lugs", help="select lugs for a termination")

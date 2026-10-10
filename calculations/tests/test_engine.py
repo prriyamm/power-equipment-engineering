@@ -245,3 +245,36 @@ class Lugs(unittest.TestCase):
     def test_feeder_includes_lug_schedule(self):
         r = size_feeder(FeederInput(voltage_v=480, continuous_a=400, length_m=30.48))
         self.assertEqual(r.lugs.lines[0].quantity, 3 * r.recommended.sets)
+
+
+class MagneticField(unittest.TestCase):
+    def test_single_conductor_ampere_law(self):
+        from pecalc.field import b_rms_ut
+        # B = mu0 I / (2 pi r): 1000 A at 1 m = 200 uT.
+        self.assertAlmostEqual(b_rms_ut([Conductor(0, 0, "A", 1e-4, 5)], [1000], 0, 1000), 200.0, places=6)
+
+    def test_flat_three_phase_far_field(self):
+        from pecalc.field import b_rms_ut, far_field_flat_ut
+        g = balanced_three_phase(1000, 1.0)
+        cs = [Conductor(-100, 0, "A", 1e-4, 5), Conductor(0, 0, "B", 1e-4, 5), Conductor(100, 0, "C", 1e-4, 5)]
+        cur = [g[p].current for p in "ABC"]
+        self.assertAlmostEqual(b_rms_ut(cs, cur, 0, 5000) / far_field_flat_ut(1000, 0.1, 5), 1, delta=0.01)
+
+
+class Enclosure(unittest.TestCase):
+    BASE = dict(voltage_v=600, current_a=4000, conductors_per_phase=6, tiers=2, size="750", length_m=61)
+
+    def test_enclosure_carries_induced_current_and_loss(self):
+        r = analyse(CableBusInput(**self.BASE, enclosure_width_mm=560, enclosure_height_mm=200))
+        self.assertGreater(r.enclosure_loss_w, 0)
+        self.assertGreater(r.enclosure_current_a, 0)
+        self.assertLess(r.enclosure_loss_w, 0.2 * r.conductor_loss_w)
+
+    def test_enclosure_too_small_is_rejected(self):
+        with self.assertRaises(ValueError):
+            analyse(CableBusInput(**self.BASE, enclosure_width_mm=200, enclosure_height_mm=200))
+
+    def test_no_enclosure_reports_zero(self):
+        r = analyse(CableBusInput(**self.BASE))
+        self.assertEqual(r.enclosure_loss_w, 0)
+        self.assertIn("side 1 m", r.field_ut)
