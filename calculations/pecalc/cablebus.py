@@ -25,6 +25,7 @@ from . import ampacity as amp
 from . import conductors as cond
 from .forces import N_PER_M_TO_LBF_PER_FT, fault_forces
 from .impedance import Conductor, Group, balanced_three_phase, solve_sharing
+from .thermal import CableConstruction, free_air_ampacity
 
 PHASES = ("A", "B", "C")
 CU_RHO20 = 1.7241e-8  # ohm m, annealed copper (shield tapes / wires)
@@ -49,9 +50,17 @@ class CableBusInput:
     insulation_temp_c: int = 90
     terminal_temp_c: int = 90          # equipment termination rating (NEC 110.14(C) / CEC 4-006)
     ambient_c: float = 40.0
-    # Datasheet / calculated ampacity per cable (overrides the code table).
-    cable_ampacity_a: float | None = None
+    # Ampacity method: "auto" (datasheet if given, else code table for LV, else
+    # calculated), "table", "datasheet" or "calculated" (IEC 60287 thermal model).
+    ampacity_method: str = "auto"
+    cable_ampacity_a: float | None = None      # datasheet free-air rating per cable
     cable_ampacity_ambient_c: float = 40.0
+    # Cable construction (needed for "calculated"; also gives OD and shield geometry).
+    insulation: str = "XLPE"
+    insulation_mm: float | None = None         # incl. conductor/insulation screens for MV
+    shield_mm: float = 0.0
+    jacket_mm: float = 0.0
+    jacket: str = "PVC"
     # MV shields: "none", "single_point" (no circulating current) or "both_ends".
     shield_bonding: str = "none"
     shield_area_mm2: float | None = None   # copper tape/wire cross-section per cable
@@ -183,15 +192,37 @@ def _groups(inp: CableBusInput, with_shields: bool) -> dict[str, Group]:
 
 # --- ampacity ---------------------------------------------------------------
 
+def construction(inp: CableBusInput) -> CableConstruction | None:
+    if inp.insulation_mm is None:
+        return None
+    return CableConstruction(inp.size, inp.material, inp.insulation, inp.insulation_mm, inp.shield_mm,
+                             inp.jacket_mm, inp.jacket, inp.voltage_v, inp.insulation_temp_c)
+
+
+def resolve_method(inp: CableBusInput) -> str:
+    m = inp.ampacity_method
+    if m == "auto":
+        if inp.cable_ampacity_a:
+            return "datasheet"
+        if inp.voltage_v <= 2000:
+            return "table"
+        return "calculated"
+    if m not in ("table", "datasheet", "calculated"):
+        raise ValueError("ampacity_method must be auto, table, datasheet or calculated")
+    return m
+
+
 def per_cable_ampacity(inp: CableBusInput) -> tuple[float, str]:
-    if inp.cable_ampacity_a:
+    if resolve_method(inp) == "datasheet":
+        if not inp.cable_ampacity_a:
+            raise ValueError("ampacity_method 'datasheet' needs cable_ampacity_a")
         f = amp.ambient_factor(inp.ambient_c, inp.insulation_temp_c, inp.cable_ampacity_ambient_c)
         return (inp.cable_ampacity_a * f,
                 f"Supplied rating {inp.cable_ampacity_a:.0f} A at {inp.cable_ampacity_ambient_c:.0f} C "
                 f"x ambient factor {f:.3f} ({inp.ambient_c:.0f} C)")
     if inp.voltage_v > 2000:
-        raise ValueError("Above 2000 V supply cable_ampacity_a (datasheet free-air rating); "
-                         "MV code tables and the calculated-ampacity model are not loaded yet")
+        raise ValueError("Code tables are loaded for <= 2000 V only; above that use the 'calculated' "
+                         "method (give the cable construction) or 'datasheet' (give cable_ampacity_a)")
     amp.check_status(inp.code, inp.allow_placeholder_data)
     base = amp.table_ampacity(inp.code, "free_air", inp.material, inp.size, inp.insulation_temp_c)
     if base is None:
@@ -212,10 +243,15 @@ def _load_rated_ambient(code: str) -> float:
 def analyse(inp: CableBusInput) -> CableBusResult:
     size = cond.normalize_size(inp.size)
     inp.size = size
-    od = inp.cable_od_mm or (cond.cable_od_mm(size) if inp.voltage_v <= 2000 else None)
+    cons = construction(inp)
+    od = inp.cable_od_mm or (cons.de_mm if cons else None) or (cond.cable_od_mm(size) if inp.voltage_v <= 2000 else None)
     if od is None:
-        raise ValueError("cable_od_mm is required above 2000 V (take it from the cable datasheet)")
+        raise ValueError("Above 2000 V give cable_od_mm or the cable construction (insulation_mm, shield_mm, jacket_mm)")
     with_shields = inp.shield_bonding == "both_ends"
+    if with_shields and cons and cons.shield_mm:
+        inp.shield_mean_diameter_mm = inp.shield_mean_diameter_mm or cons.shield_mean_diameter_mm
+        inp.shield_area_mm2 = inp.shield_area_mm2 or math.pi * cons.shield_mean_diameter_mm * cons.shield_mm
+    method = resolve_method(inp)
     notes: list[str] = []
 
     patterns = (candidate_patterns(inp.conductors_per_phase, inp.tiers) if inp.pattern == "auto"
@@ -230,21 +266,50 @@ def analyse(inp: CableBusInput) -> CableBusResult:
     pattern, cs, res, _, _ = scored[0]
     compared = [PatternScore(p, round(m, 1), round(l, 2)) for p, _, _, m, l in scored]
 
-    a_cable, basis = per_cable_ampacity(inp)
+    pitch = inp.spacing_mm or 2 * od
+    labels = {c.label: i for i, c in enumerate(cs)}
     a_term = None
-    if not inp.cable_ampacity_a and inp.voltage_v <= 2000:
-        a_term = amp.table_ampacity(inp.code, "free_air", inp.material, size, inp.terminal_temp_c)
+    if method == "calculated":
+        if cons is None:
+            raise ValueError("The calculated ampacity method needs the cable construction (insulation_mm etc.)")
+        installation = "isolated" if pitch - od >= 0.75 * od else "flat_touching"
+        cache: dict[float, object] = {}
+
+        def ampacity_for(i: int):
+            core_loss = res.losses_w_per_m[i]
+            s = labels.get(f"S-{cs[i].label}")
+            lam = round(res.losses_w_per_m[s] / core_loss, 4) if s is not None and core_loss else 0.0
+            if lam not in cache:
+                cache[lam] = free_air_ampacity(cons, inp.ambient_c, installation, lam, inp.frequency_hz, pitch)
+            return cache[lam]
+        notes.append("Calculated ampacity (IEC 60287 / Neher-McGrath thermal model) is permitted by NEC 310.14(B) / "
+                     "315.60(B) under engineering supervision; model constants are UNVERIFIED pending check against "
+                     "IEC 60287. Each cable's own shield loss factor (lambda1) from the sharing solve is included.")
+    else:
+        a_cable, basis_fixed = per_cable_ampacity(inp)
+        if method == "table":
+            a_term = amp.table_ampacity(inp.code, "free_air", inp.material, size, inp.terminal_temp_c)
 
     rows = []
+    worst = None
     for i, c in enumerate(cs):
         if c.group not in PHASES:
             continue
         cur = abs(res.currents[i])
-        rows.append(ConductorRow(i, c.group, round(c.y_mm / (inp.tier_spacing_mm or inp.spacing_mm or 2 * od)),
-                                 round(c.x_mm, 1), round(c.y_mm, 1), round(cur, 1),
-                                 round(res.share_pct(i), 1), round(a_cable, 1), round(cur / a_cable * 100, 1)))
+        if method == "calculated":
+            ar = ampacity_for(i)
+            a_i, basis_i = ar.ampacity_a, ar.summary()
+        else:
+            a_i, basis_i = a_cable, basis_fixed
+        row = ConductorRow(i, c.group, round(c.y_mm / (inp.tier_spacing_mm or pitch)),
+                           round(c.x_mm, 1), round(c.y_mm, 1), round(cur, 1),
+                           round(res.share_pct(i), 1), round(a_i, 1), round(cur / a_i * 100, 1))
+        rows.append(row)
+        if worst is None or row.loading_pct > worst[0].loading_pct:
+            worst = (row, basis_i)
     max_cur = max(r.current_a for r in rows)
-    max_loading = max(r.loading_pct for r in rows)
+    max_loading = worst[0].loading_pct
+    basis = worst[1]
 
     # Voltage drop: worst phase, sending-end phase voltage as reference.
     v_ph = inp.voltage_v / math.sqrt(3)
@@ -266,12 +331,12 @@ def analyse(inp: CableBusInput) -> CableBusResult:
         check("Minimum size for paralleled conductors", clauses["parallel"], cond.size_index(size),
               cond.size_index(min_size), "size index", cond.size_index(size) >= cond.size_index(min_size),
               f"min {cond.size_label(min_size)}")
-    pitch = inp.spacing_mm or 2 * od
-    if not inp.cable_ampacity_a:
+    if method == "table":
         check("Spacing for free-air ampacity basis (>= 1 cable diameter clearance)",
               "NEC 370.80 / CEC 12-2252 [UNVERIFIED]", pitch - od, od, "mm", pitch - od >= od - 1e-6)
-    check("Most heavily loaded conductor within ampacity", basis, max_cur, a_cable, "A", max_cur <= a_cable,
-          f"current sharing solved for pattern {pattern}")
+    w = worst[0]
+    check("Most heavily loaded conductor within its ampacity", basis, w.current_a, w.ampacity_a, "A",
+          w.current_a <= w.ampacity_a, f"{w.phase} at x={w.x_mm} mm; current sharing solved for pattern {pattern}")
     if a_term is not None:
         check("Most heavily loaded conductor within termination rating", clauses["terminal"], max_cur, a_term,
               "A", max_cur <= a_term, f"{inp.terminal_temp_c} C column, no ambient correction")
@@ -296,7 +361,7 @@ def analyse(inp: CableBusInput) -> CableBusResult:
                      f"conductor loss). Single-point or cross bonding removes most of this.")
     if inp.voltage_v > 2000 and inp.shield_bonding == "none":
         notes.append("MV cable selected with shield_bonding 'none': set 'single_point' or 'both_ends' to state the design.")
-    if not inp.cable_ampacity_a:
+    if method == "table":
         notes.append(f"{inp.code} table data status: {amp.table_info(inp.code, 'free_air').status}.")
     notes.append("Enclosure losses (eddy currents in the aluminum housing) are not yet included.")
 

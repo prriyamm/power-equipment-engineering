@@ -9,8 +9,8 @@ From this folder (`calculations/`):
 ```
 python3 -m pecalc feeder --voltage 480 --continuous 400 --length 100
 python3 -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 4 --length 200 --fault-ka 65 --xr 20
-python3 -m pecalc cablebus --voltage 15000 --current 2000 --size 750 --per-phase 3 --od 45 \
-    --cable-ampacity 900 --shield-bonding both_ends --shield-area 16 --shield-diameter 38 --length 200 --fault-ka 40
+python3 -m pecalc cablebus --voltage 15000 --current 2000 --size 750 --per-phase 3 --insulation EPR \
+    --insulation-mm 7.2 --shield-mm 0.13 --jacket-mm 2 --shield-bonding both_ends --length 200 --fault-ka 40
 ```
 
 On Windows use `py -m pecalc ...`. Add `--json` for machine-readable output, `--help` for every option. Lengths default to feet (`--length-unit m` for metres).
@@ -30,7 +30,8 @@ python3 -m unittest discover -s tests -v
 | `sizing.py` | feeder sizing: parallel sets, terminal and continuous-load rules, voltage drop, losses, short-circuit withstand |
 | `impedance.py` | multi-conductor impedance (Carson), current sharing among paralleled conductors, bonded shield circulating currents |
 | `forces.py` | time-domain short-circuit forces on any conductor layout (worst case over inception angle) |
-| `cablebus.py` | cable bus design check, any voltage: layout, phase pattern search, sharing, ampacity, VD, losses, shield losses, fault forces |
+| `thermal.py` | calculated ampacity: IEC 60287 / Neher-McGrath thermal model for cables in free air, dielectric loss, shield loss factor |
+| `cablebus.py` | cable bus design check, any voltage: layout, phase pattern search, sharing, ampacity (table / datasheet / calculated per cable), VD, losses, shield losses, fault forces |
 
 ## Data status
 
@@ -44,4 +45,8 @@ CEC spot values gathered during research (unverified; confirm against CSA C22.1)
 
 ## Not yet included
 
-Calculated (thermal-model) ampacity, MV code tables, enclosure eddy losses, lug selection, overcurrent device coordination.
+MV code tables, enclosure eddy losses, lug selection, overcurrent device coordination, solar radiation and cable-in-tray/conduit thermal models.
+
+## Calculated ampacity note
+
+The IEC 60287 model gives 17–28 % more ampacity than NEC Table 310.17 for isolated 600 V cables, consistent with the NEC tables being conservative. Code tables therefore remain the default for code-compliance checks at 2000 V and below; the calculated method is used above 2000 V or when chosen explicitly, and is permitted by NEC 310.14(B) / 315.60(B) under engineering supervision.

@@ -164,3 +164,52 @@ class CableBus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CalculatedAmpacity(unittest.TestCase):
+    def _lv(self, size):
+        from pecalc.thermal import CableConstruction
+        return CableConstruction(size, insulation="XHHW", insulation_mm=cond.insulation_mm(size))
+
+    def test_lv_calculated_is_somewhat_above_nec_free_air_table(self):
+        # NEC Table 310.17 is known to be conservative relative to IEC 60287 for an
+        # isolated cable; expect the calculated value 10-35 % higher at 30 C.
+        from pecalc.thermal import free_air_ampacity
+        for size in ("1/0", "4/0", "500", "750", "1000"):
+            with self.subTest(size=size):
+                calc = free_air_ampacity(self._lv(size), 30).ampacity_a
+                table = amp.table_ampacity("NEC", "free_air", "Cu", size, 90)
+                self.assertTrue(1.10 <= calc / table <= 1.35, calc / table)
+
+    def test_ambient_and_shield_loss_reduce_ampacity(self):
+        from pecalc.thermal import free_air_ampacity
+        c = self._lv("500")
+        a30 = free_air_ampacity(c, 30).ampacity_a
+        a40 = free_air_ampacity(c, 40).ampacity_a
+        a40_l = free_air_ampacity(c, 40, lambda1=0.3).ampacity_a
+        self.assertGreater(a30, a40)
+        self.assertGreater(a40, a40_l)
+        self.assertEqual(free_air_ampacity(c, 95).ampacity_a, 0)
+
+    def test_dielectric_loss_scales_with_voltage(self):
+        from pecalc.thermal import CableConstruction, dielectric_loss
+        mv = CableConstruction("750", insulation="EPR", insulation_mm=7.2, voltage_v=15000)
+        lv = CableConstruction("750", insulation="EPR", insulation_mm=7.2, voltage_v=600)
+        self.assertAlmostEqual(dielectric_loss(mv) / dielectric_loss(lv), (15000 / 600) ** 2, places=6)
+
+
+class CableBusCalculatedMV(unittest.TestCase):
+    BASE = dict(voltage_v=15000, current_a=2000, size="750", insulation="EPR", insulation_mm=7.2,
+                shield_mm=0.13, jacket_mm=2.0, length_m=60)
+
+    def test_two_per_phase_fails_three_passes(self):
+        two = analyse(CableBusInput(**self.BASE, conductors_per_phase=2, shield_bonding="single_point"))
+        three = analyse(CableBusInput(**self.BASE, conductors_per_phase=3, shield_bonding="single_point"))
+        self.assertFalse(two.passed)
+        self.assertTrue(three.passed)
+
+    def test_both_ends_bonding_derates_each_cable(self):
+        sp = analyse(CableBusInput(**self.BASE, conductors_per_phase=3, shield_bonding="single_point"))
+        be = analyse(CableBusInput(**self.BASE, conductors_per_phase=3, shield_bonding="both_ends"))
+        self.assertLess(min(c.ampacity_a for c in be.conductors), min(c.ampacity_a for c in sp.conductors))
+        self.assertGreater(be.max_loading_pct, sp.max_loading_pct)

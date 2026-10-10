@@ -55,7 +55,7 @@ Published manufacturer rating tables and worked calculations (cable bus makers' 
 
 1. **Engine core**: conductor physics ✅, code ampacity tables ✅ (NEC unverified, CEC placeholder), feeder sizing ✅, multi-conductor impedance and current sharing, fault forces.
 2. **Cable bus v1**: any voltage 600 V–35 kV, using the shared engine; validated against published cable bus maker data.
-3. **Calculated ampacity**: IEC 60287 / Neher-McGrath thermal model for cables in air, tray, cable bus, conduit; shield losses for MV.
+3. **Calculated ampacity** ✅ (free air): IEC 60287 / Neher-McGrath thermal model for cables in air, tray, cable bus, conduit; shield losses for MV.
 4. **Lugs and terminations.**
 5. **Switchgear bus**, then **transformer**, then **magnetic field** modules.
 6. Reports (PDF calc packages), project files and revisions, then a UI.
