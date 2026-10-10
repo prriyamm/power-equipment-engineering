@@ -45,7 +45,7 @@ Later, system-level studies (load flow, short circuit, arc flash) can be added b
 - Engine: Python, pure functions, standard library only for now, so it runs unchanged on Windows and Linux. Numeric dependencies (numpy, etc.) can be added in a virtual environment when needed.
 - Data: JSON files under `calculations/pecalc/data/`, one file per table and edition, each with `_meta` status, source and edition.
 - Tests: `python3 -m unittest` from `calculations/`.
-- UI: decide later (desktop app or web app calling the engine).
+- UI: native desktop app "Power Equipment Studio" (Qt for Python / PySide6) in `app/`, packaged with PyInstaller; Windows installer (Inno Setup), Linux and macOS builds from the release workflow.
 
 ## Validation sources
 
@@ -58,4 +58,4 @@ Published manufacturer rating tables and worked calculations (cable bus makers' 
 3. **Calculated ampacity** ✅ (free air): IEC 60287 / Neher-McGrath thermal model for cables in air, tray, cable bus, conduit; shield losses for MV.
 4. **Lugs and terminations.**
 5. **Switchgear bus** ✅ (thermal + bracing; clearances pending), then **transformer** ✅ (preliminary design; cooling and inner-winding buckling pending), then **magnetic field** ✅ (cable bus; general CLI pending).
-6. Reports (PDF calc packages), project files and revisions, then a UI.
+6. Reports ✅ (HTML calc packages, print to PDF), case files ✅, desktop app ✅; next: revisions/comparison, PDF export, installer signing.

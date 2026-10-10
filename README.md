@@ -17,6 +17,8 @@ python3 -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 4
 python3 -m unittest discover -s tests
 ```
 
+**Desktop app:** Power Equipment Studio, a native Qt application (Windows installer, Linux, macOS); see [app/README.md](app/README.md) and the Releases page.
+
 See [calculations/README.md](calculations/README.md) for every module and option, and [ARCHITECTURE.md](ARCHITECTURE.md) for the design and roadmap.
 
 ## Status

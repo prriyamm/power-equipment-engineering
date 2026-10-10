@@ -3,3 +3,7 @@ __pycache__/
 # Local-only: material from private notes, never published
 private/
 CLAUDE.local.md
+.venv/
+build/
+dist/
+*.spec.bak
