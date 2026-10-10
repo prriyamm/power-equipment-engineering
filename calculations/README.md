@@ -17,6 +17,17 @@ python3 -m pecalc cablebus --voltage 15000 --current 2000 --size 750 --per-phase
 
 On Windows use `py -m pecalc ...`. Add `--json` for machine-readable output, `--help` for every option. Lengths default to feet (`--length-unit m` for metres).
 
+## Design cases and reports
+
+Save inputs as a case file (see `../examples/`), then run it or produce a printable calculation package:
+
+```
+python3 -m pecalc run ../examples/cablebus-15kv-2000a.json
+python3 -m pecalc run ../examples/cablebus-15kv-2000a.json --report cablebus-calc.html
+```
+
+The report includes inputs, results, checks with code clauses, data-status warnings, the engine version and an input hash, and a Prepared / Checked / Approved block. Open it in a browser and print to PDF.
+
 ## Test
 
 ```

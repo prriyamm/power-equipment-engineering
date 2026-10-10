@@ -362,3 +362,30 @@ class Transformer(unittest.TestCase):
         from pecalc.transformer import next_standard_kva
         self.assertEqual(next_standard_kva(1180, 1.25), 1500)
         self.assertEqual(next_standard_kva(300), 300)
+
+
+class CasesAndReports(unittest.TestCase):
+    EXAMPLES = __import__("pathlib").Path(__file__).resolve().parents[2] / "examples"
+
+    def test_all_examples_run_and_render(self):
+        from pecalc.cases import Case
+        from pecalc.report import render
+        files = sorted(self.EXAMPLES.glob("*.json"))
+        self.assertGreaterEqual(len(files), 4)
+        for f in files:
+            with self.subTest(case=f.name):
+                case = Case.load(f)
+                html_doc = render(case, case.run())
+                self.assertIn("<h2>Checks</h2>", html_doc)
+                self.assertIn(case.input_hash(), html_doc)
+
+    def test_unknown_input_is_rejected(self):
+        from pecalc.cases import Case
+        with self.assertRaises(ValueError):
+            Case(module="feeder", inputs={"voltage": 480}).input_object()
+
+    def test_input_hash_changes_with_inputs(self):
+        from pecalc.cases import Case
+        a = Case(module="feeder", inputs={"voltage_v": 480, "continuous_a": 400})
+        b = Case(module="feeder", inputs={"voltage_v": 480, "continuous_a": 401})
+        self.assertNotEqual(a.input_hash(), b.input_hash())

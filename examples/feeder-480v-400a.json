@@ -1,0 +1,7 @@
+{
+  "project": "Example",
+  "title": "480 V 400 A continuous feeder, 100 ft in PVC conduit",
+  "revision": "A",
+  "module": "feeder",
+  "inputs": {"voltage_v": 480, "continuous_a": 400, "length_m": 30.48, "installation": "raceway", "conduit": "pvc"}
+}

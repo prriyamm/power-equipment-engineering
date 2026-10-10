@@ -1,0 +1,13 @@
+{
+  "project": "Example",
+  "title": "15 kV 2000 A cable bus, 3 x 750 kcmil Cu EPR per phase",
+  "revision": "A",
+  "module": "cablebus",
+  "inputs": {
+    "voltage_v": 15000, "current_a": 2000, "size": "750", "conductors_per_phase": 3,
+    "insulation": "EPR", "insulation_mm": 7.2, "shield_mm": 0.13, "jacket_mm": 2.0,
+    "shield_bonding": "both_ends", "length_m": 61, "ambient_c": 40,
+    "enclosure_width_mm": 800, "enclosure_height_mm": 150,
+    "fault_ka": 40, "x_over_r": 15
+  }
+}
