@@ -133,6 +133,9 @@ class CableBusResult:
     support_load_lbf: float | None
     checks: list[dict]
     notes: list[str] = field(default_factory=list)
+    cable_od_mm: float = 0.0
+    pitch_mm: float = 0.0
+    tier_pitch_mm: float = 0.0
 
     @property
     def passed(self) -> bool:
@@ -461,4 +464,4 @@ def analyse(inp: CableBusInput) -> CableBusResult:
                           round(shield_i, 1), round(encl_loss, 1), round(encl_i, 1), field_ut,
                           None if f_nm is None else round(f_nm, 1),
                           None if f_lbf is None else round(f_lbf, 1), None if support is None else round(support, 1),
-                          checks, notes)
+                          checks, notes, round(od, 2), round(pitch, 2), round(inp.tier_spacing_mm or pitch, 2))

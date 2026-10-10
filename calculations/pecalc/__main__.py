@@ -7,6 +7,7 @@ import sys
 
 from .ampacity import DataStatusError
 from .cases import Case
+from .cablebus_design import DesignRequest, design_options
 from .cablebus import CableBusInput, analyse
 from .lugs import LugInput, select_lugs
 from .switchgear import BusInput, analyse_bus
@@ -201,6 +202,42 @@ def run_case(a: argparse.Namespace) -> int:
     return 0 if passed else 1
 
 
+def cablebus_design(a: argparse.Namespace) -> int:
+    req = DesignRequest(code=a.code, voltage_v=a.voltage, current_a=a.current, length_m=_length_m(a.length, a.length_unit),
+                        material=a.material, ambient_c=a.ambient, sizes=tuple(a.sizes.split(",")) if a.sizes else None,
+                        insulation=a.insulation, insulation_mm=a.insulation_mm, shield_mm=a.shield_mm,
+                        jacket_mm=a.jacket_mm, fault_ka=a.fault_ka, x_over_r=a.xr, support_span_m=a.support_span,
+                        block_material=a.block, block_rated_load_n=a.block_rating, max_loading_pct=a.max_loading,
+                        allow_placeholder_data=a.allow_placeholder_data)
+    r = design_options(req)
+    if a.json:
+        print(r.to_json())
+        return 0 if any(o.passed for o in r.options) else 1
+    print(f"Cable bus designs - {req.code}, {req.voltage_v:g} V, {req.current_a:g} A ({r.considered} checked)\n")
+    print(f"{'#':>2}  {'Result':6} {'Design':58} {'Pattern':22} {'Load%':>6} {'VD%':>5} {'kW':>6} {'Block MPa':>11}")
+    for o in r.options:
+        blk = "" if o.block_stress_mpa is None else f"{o.block_stress_mpa}/{o.block_allowable_mpa}"
+        print(f"{o.rank:>2}  {'PASS' if o.passed else 'FAIL':6} {o.label:58} {o.pattern:22} {o.max_loading_pct:6.1f} "
+              f"{o.vd_pct:5.2f} {o.loss_kw:6.1f} {blk:>11}  {', '.join(o.tags) or '; '.join(o.failed_checks)}")
+    if a.choose:
+        o = next((x for x in r.options if x.rank == a.choose), None)
+        if o is None:
+            raise ValueError(f"No option #{a.choose}")
+        case = Case(module="cablebus", inputs={k: (list(v) if isinstance(v, tuple) else v)
+                                                for k, v in o.case_inputs.items()},
+                    title=f"Cable bus: {o.label}")
+        if a.save_case:
+            case.save(a.save_case)
+            print(f"\nCase saved to {a.save_case}")
+        if a.report:
+            from .report import write_report
+            print(f"Report written to {write_report(case, case.run(), a.report)}")
+    print()
+    for n in r.notes:
+        print(f"Note: {n}")
+    return 0 if any(o.passed for o in r.options) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="pecalc", description="Power equipment engineering calculations")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -331,6 +368,24 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--json", action="store_true")
     t.set_defaults(func=transformer, ambient=0)
 
+    d = sub.add_parser("cablebus-design", help="recommend cable bus designs (sizes, tiers, layout, enclosure)")
+    common(d)
+    d.add_argument("--current", type=float, required=True)
+    d.add_argument("--sizes", help="comma-separated sizes to try, e.g. 500,750,1000")
+    d.add_argument("--insulation", choices=["XLPE", "EPR", "PVC", "XHHW", "RW90"], default="XLPE")
+    d.add_argument("--insulation-mm", type=float, help="MV insulation wall incl. screens, mm")
+    d.add_argument("--shield-mm", type=float, default=0.0)
+    d.add_argument("--jacket-mm", type=float, default=0.0)
+    d.add_argument("--xr", type=float, default=15.0)
+    d.add_argument("--support-span", type=float, default=0.9144)
+    d.add_argument("--block", choices=["GPO-3", "GPO-2", "GPO-1"], default="GPO-3")
+    d.add_argument("--block-rating", type=float, help="tested block load per cable position, N")
+    d.add_argument("--max-loading", type=float, default=95.0)
+    d.add_argument("--choose", type=int, help="option number to save / report")
+    d.add_argument("--save-case", help="save the chosen option as a case file")
+    d.add_argument("--report", help="write the chosen option's calculation package (HTML)")
+    d.set_defaults(func=cablebus_design)
+
     r = sub.add_parser("run", help="run a saved design case file")
     r.add_argument("case", help="case JSON file")
     r.add_argument("--report", help="write a printable HTML calculation package to this path")
@@ -341,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "transformer" and not (a.kva or a.load_kva):
         p.error("transformer needs --kva or --load-kva")
     if a.ambient is None:
-        a.ambient = 40.0 if a.cmd == "cablebus" else 30.0
+        a.ambient = 40.0 if a.cmd in ("cablebus", "cablebus-design") else 30.0
     try:
         return a.func(a)
     except (ValueError, DataStatusError, OSError) as e:

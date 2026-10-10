@@ -389,3 +389,55 @@ class CasesAndReports(unittest.TestCase):
         a = Case(module="feeder", inputs={"voltage_v": 480, "continuous_a": 400})
         b = Case(module="feeder", inputs={"voltage_v": 480, "continuous_a": 401})
         self.assertNotEqual(a.input_hash(), b.input_hash())
+
+
+class CableBusDesigner(unittest.TestCase):
+    def test_lv_options_pass_and_fit_enclosures(self):
+        from pecalc.cablebus_design import INCH, DesignRequest, design_options
+        r = design_options(DesignRequest(voltage_v=600, current_a=4000))
+        passing = [o for o in r.options if o.passed]
+        self.assertGreaterEqual(len(passing), 3)
+        for o in passing:
+            self.assertLessEqual(o.max_loading_pct, 95.0)
+            per_tier = 3 * o.per_phase // o.tiers
+            needed_w = (per_tier - 1) * 2 * o.cable_od_mm + o.cable_od_mm + 2 * 25
+            self.assertGreaterEqual(o.inside_w_mm + 2.0, needed_w)  # OD is reported rounded
+        tags = {t for o in r.options for t in o.tags}
+        self.assertTrue({"least copper", "smallest enclosure", "most margin"} <= tags)
+
+    def test_more_tiers_gives_narrower_enclosure(self):
+        from pecalc.cablebus_design import DesignRequest, design_options
+        r = design_options(DesignRequest(voltage_v=600, current_a=4000, sizes=("500",), top_n=20))
+        widths = {}
+        for o in r.options:
+            widths.setdefault(o.per_phase, {})[o.tiers] = o.inside_w_mm
+        pairs = [(w[1], max(t for t in w if t > 1), w[max(t for t in w if t > 1)])
+                 for w in widths.values() if 1 in w and len(w) > 1]
+        self.assertTrue(pairs, "expected a design available in 1 tier and in 2 or 3 tiers")
+        for one_tier, _, stacked in pairs:
+            self.assertLess(stacked, one_tier)
+
+    def test_mv_needs_construction_and_checks_blocks(self):
+        from pecalc.cablebus_design import DesignRequest, design_options
+        with self.assertRaises(ValueError):
+            design_options(DesignRequest(voltage_v=15000, current_a=2000))
+        r = design_options(DesignRequest(voltage_v=15000, current_a=2000, insulation="EPR", insulation_mm=7.2,
+                                         shield_mm=0.13, jacket_mm=2.0, fault_ka=40))
+        self.assertTrue(any(o.passed for o in r.options))
+        self.assertTrue(all(o.block_stress_mpa is not None for o in r.options))
+
+    def test_tested_block_rating_can_fail_a_design(self):
+        from pecalc.cablebus_design import DesignRequest, design_options
+        r = design_options(DesignRequest(voltage_v=600, current_a=4000, fault_ka=100, x_over_r=30,
+                                         block_rated_load_n=500))
+        self.assertTrue(any("rated" in " ".join(o.failed_checks) for o in r.options))
+
+    def test_drawing_svg(self):
+        from pecalc.cablebus import CableBusInput, analyse
+        from pecalc.drawing import cablebus_svg
+        inp = CableBusInput(voltage_v=600, current_a=3000, conductors_per_phase=4, tiers=2, size="750",
+                            enclosure_width_mm=457.2, enclosure_height_mm=203.2)
+        svg = cablebus_svg(inp, analyse(inp))
+        self.assertTrue(svg.startswith("<svg"))
+        self.assertEqual(svg.count("<circle") - 3, 12)   # 12 cables + 3 legend dots
+        self.assertIn("GPO-3", svg)

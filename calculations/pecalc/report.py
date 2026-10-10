@@ -58,7 +58,7 @@ def _checks(checks: list) -> tuple[str, bool]:
     return _table(rows, ["", "Check", "Value", "Limit", "Basis", "Note"]), ok
 
 
-def _sections(module: str, r) -> list[tuple[str, str]]:
+def _sections(module: str, r, inp=None) -> list[tuple[str, str]]:
     """Module-specific result sections."""
     s: list[tuple[str, str]] = []
     if module == "feeder":
@@ -78,6 +78,9 @@ def _sections(module: str, r) -> list[tuple[str, str]]:
                                                 l.hole_spacing_in or ""] for l in r.lugs.lines],
                                               ["Qty", "Conductor", "Style", "Material", "Stud (in)", "Centres (in)"])))
     elif module == "cablebus":
+        if inp is not None and inp.enclosure_width_mm:
+            from .drawing import cablebus_svg
+            s.append(("Cross-section", f"<div class='fig'>{cablebus_svg(inp, r)}</div>"))
         s.append(("Summary", _kv({
             "phase pattern": r.pattern, "ampacity basis (worst conductor)": r.ampacity_basis,
             "worst conductor loading (%)": r.max_loading_pct, "voltage drop (%)": r.vd_pct,
@@ -126,7 +129,7 @@ table{border-collapse:collapse;width:100%;margin:4px 0}th,td{border:1px solid #d
 text-align:left;vertical-align:top}th{background:#f2f2f2}
 .banner{padding:8px 12px;border-radius:4px;font-weight:600;margin:12px 0}.pass{background:#e6f4ea;color:#14532d}
 .fail{background:#fde8e8;color:#7f1d1d}.warn{background:#fff7e0;color:#6b4e00;font-weight:400}
-.sign td{height:42px}.small{color:#555;font-size:11px}
+.sign td{height:42px}.fig svg{max-width:100%;height:auto}.small{color:#555;font-size:11px}
 @media print{body{margin:0}h2{break-after:avoid}table{break-inside:auto}tr{break-inside:avoid}}
 """
 
@@ -155,7 +158,7 @@ def render(case: Case, result, results_first: bool = False) -> str:
         parts.append("<div class='banner warn'>This calculation uses data or methods marked "
                      f"{' / '.join(flagged)}. Verify them against the licensed code or standard before "
                      "relying on the result.</div>")
-    body = [f"<h2>{_esc(title)}</h2>{html_}" for title, html_ in _sections(module, result)]
+    body = [f"<h2>{_esc(title)}</h2>{html_}" for title, html_ in _sections(module, result, case.input_object())]
     body.append("<h2>Checks</h2>" + checks_html)
     if notes:
         body.append("<h2>Notes</h2><ul>" + "".join(f"<li>{_esc(n)}</li>" for n in notes) + "</ul>")

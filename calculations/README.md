@@ -9,6 +9,8 @@ From this folder (`calculations/`):
 ```
 python3 -m pecalc feeder --voltage 480 --continuous 400 --length 100
 python3 -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 4 --length 200 --fault-ka 65 --xr 20
+python3 -m pecalc cablebus-design --voltage 15000 --current 2000 --length 200 --insulation EPR --insulation-mm 7.2 \
+    --shield-mm 0.13 --jacket-mm 2 --fault-ka 40 --choose 3 --report cablebus-option3.html
 python3 -m pecalc transformer --load-kva 1180 --growth 1.25 --hv 13800 --lv 480 --target-z 5.75 --tune --doe-eff 99.48
 python3 -m pecalc bus --current 3000 --thickness 6.35 --width 152.4 --bars 3 --phase-spacing 200 --orientation edge_to_edge --fault-ka 65 --air-rise 15
 python3 -m pecalc cablebus --voltage 15000 --current 2000 --size 750 --per-phase 3 --insulation EPR \
@@ -47,6 +49,8 @@ python3 -m unittest discover -s tests -v
 | `lugs.py` | lug style, material, stud and hole pattern, quantity per termination, pad capacity, NEC 110.14(C) / CEC 4-006 terminal temperature; part/die/torque from `data/lug_catalog.json` |
 | `switchgear.py` | switchgear / switchboard bus: filament model for Rac/Rdc and lamination sharing, temperature rise (convection + radiation), short-circuit force per phase pack, bar bending stress, support load and max span |
 | `transformer.py` | 3-phase core-type preliminary design (EMF / output equations), losses, Rogowski impedance with tuning to a target %Z, efficiency incl. DOE test point, regulation, secondary fault current, 2 s thermal withstand, outer-winding hoop stress, standard kVA selection |
+| `cablebus_design.py` | cable bus **designer**: enumerates size x conductors per phase x 1/2/3 tiers, code spacing, smallest standard enclosure, full analysis of each, GPO-3 support-block check, ranked options (least copper / smallest enclosure / most margin) |
+| `drawing.py` | SVG cross-section drawings (enclosure, support blocks, cables by phase, dimensions) used by reports and the app |
 | `field.py` | magnetic flux density (2-D Biot-Savart, RMS resultant) around any conductor set; ICNIRP reference levels |
 | `cablebus.py` | cable bus design check, any voltage: layout, phase pattern search, sharing, ampacity (table / datasheet / calculated per cable), VD, losses, shield losses, aluminum enclosure induced currents and loss, magnetic field, fault forces |
 
