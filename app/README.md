@@ -1,6 +1,6 @@
 # Power Equipment Studio (desktop app)
 
-A native desktop application (Qt / PySide6) for the `pecalc` engine: feeder & cable sizing, cable bus, switchgear bus, transformer and lug modules, with case files, a cross-section view and printable calculation reports.
+A native desktop application (Qt / PySide6) for the `pecalc` engine: feeder & cable sizing, cable bus, switchgear bus, transformer and lug modules, with case files, a cross-section view and calculation reports exported as PDF or HTML.
 
 ## Install
 

@@ -39,7 +39,11 @@ if __name__ == "__main__" and "--selftest" in sys.argv:
     sys.exit(selftest())
 
 from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThreadPool, Signal  # noqa: E402
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPalette, QPen  # noqa: E402
+from PySide6.QtGui import (  # noqa: E402
+    QAction, QColor, QFont, QIcon, QKeySequence, QPageLayout, QPageSize, QPainter, QPalette, QPdfWriter, QPen,
+    QTextDocument,
+)
+from PySide6.QtCore import QMarginsF  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
@@ -627,16 +631,37 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Nothing to export", "Run the calculation first.")
             return
         case, result = last
-        fn, _ = QFileDialog.getSaveFileName(self, "Export calculation report", f"{case.title or case.module}.html",
-                                            "HTML report (*.html)")
-        if fn:
+        fn, chosen = QFileDialog.getSaveFileName(self, "Export calculation report", f"{case.title or case.module}.pdf",
+                                                 "PDF document (*.pdf);;HTML report (*.html)")
+        if not fn:
+            return
+        if fn.lower().endswith(".html") or chosen.startswith("HTML"):
+            fn = fn if fn.lower().endswith(".html") else fn + ".html"
             Path(fn).write_text(render(case, result), encoding="utf-8")
-            self.statusBar().showMessage(f"Report written to {fn} - open it and print to PDF", 8000)
+        else:
+            fn = fn if fn.lower().endswith(".pdf") else fn + ".pdf"
+            export_pdf(render(case, result), fn)
+        self.statusBar().showMessage(f"Report written to {fn}", 8000)
 
     def toggle_theme(self):
         app = QApplication.instance()
         dark = app.property("dark") is not True
         apply_theme(app, dark)
+
+
+def export_pdf(html_doc: str, path: str) -> None:
+    """Write a calculation package to PDF (Letter, 15 mm margins)."""
+    writer = QPdfWriter(path)
+    writer.setResolution(96)
+    writer.setPageLayout(QPageLayout(QPageSize(QPageSize.Letter), QPageLayout.Portrait,
+                                     QMarginsF(15, 15, 15, 15), QPageLayout.Millimeter))
+    writer.setTitle("Calculation package")
+    writer.setCreator(APP_NAME)
+    doc = QTextDocument()
+    doc.setDefaultFont(QFont("Helvetica", 9))
+    doc.setHtml(html_doc)
+    doc.setPageSize(writer.pageLayout().paintRectPixels(writer.resolution()).size().toSizeF())
+    doc.print_(writer)
 
 
 def apply_theme(app: QApplication, dark: bool) -> None:
