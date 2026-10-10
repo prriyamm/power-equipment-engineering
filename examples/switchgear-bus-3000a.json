@@ -1,0 +1,9 @@
+{
+  "project": "Example",
+  "title": "3000 A switchboard main bus, 3 x 1/4 x 6 in Cu per phase",
+  "revision": "A",
+  "module": "bus",
+  "inputs": {"current_a": 3000, "bar_thickness_mm": 6.35, "bar_width_mm": 152.4, "bars_per_phase": 3,
+             "phase_spacing_mm": 200, "orientation": "edge_to_edge", "internal_air_rise_c": 15,
+             "fault_ka": 65, "x_over_r": 15, "support_span_m": 0.6}
+}

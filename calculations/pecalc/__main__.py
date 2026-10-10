@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from .ampacity import DataStatusError
+from .cases import Case
 from .cablebus import CableBusInput, analyse
 from .lugs import LugInput, select_lugs
 from .switchgear import BusInput, analyse_bus
@@ -186,6 +187,20 @@ def transformer(a: argparse.Namespace) -> int:
     return 0 if r.passed else 1
 
 
+def run_case(a: argparse.Namespace) -> int:
+    case = Case.load(a.case)
+    result = case.run()
+    passed = bool(getattr(result, "passed", True)) and not (case.module == "feeder" and not result.recommended)
+    if a.report:
+        from .report import write_report
+        print(f"Report written to {write_report(case, result, a.report)}")
+    if a.json:
+        print(result.to_json())
+    elif not a.report:
+        print(f"{case.title or case.module}: {'PASS' if passed else 'FAIL'} (input hash {case.input_hash()})")
+    return 0 if passed else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="pecalc", description="Power equipment engineering calculations")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -316,6 +331,12 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--json", action="store_true")
     t.set_defaults(func=transformer, ambient=0)
 
+    r = sub.add_parser("run", help="run a saved design case file")
+    r.add_argument("case", help="case JSON file")
+    r.add_argument("--report", help="write a printable HTML calculation package to this path")
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(func=run_case, ambient=0)
+
     a = p.parse_args(argv)
     if a.cmd == "transformer" and not (a.kva or a.load_kva):
         p.error("transformer needs --kva or --load-kva")
@@ -323,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         a.ambient = 40.0 if a.cmd == "cablebus" else 30.0
     try:
         return a.func(a)
-    except (ValueError, DataStatusError) as e:
+    except (ValueError, DataStatusError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 

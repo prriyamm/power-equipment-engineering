@@ -1,0 +1,9 @@
+{
+  "project": "Example",
+  "title": "1500 kVA 13.8 kV delta / 480Y V liquid-filled, 5.75 % Z",
+  "revision": "A",
+  "module": "transformer",
+  "options": {"tune_impedance": true},
+  "inputs": {"kva": 1500, "hv_v": 13800, "lv_v": 480, "target_z_pct": 5.75, "source_mva": 500,
+             "j_lv_a_mm2": 2.6, "j_hv_a_mm2": 2.6}
+}
