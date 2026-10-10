@@ -9,6 +9,7 @@ from .ampacity import DataStatusError
 from .cablebus import CableBusInput, analyse
 from .lugs import LugInput, select_lugs
 from .switchgear import BusInput, analyse_bus
+from .transformer import TransformerInput, design, design_for_impedance, next_standard_kva
 from .sizing import FeederInput, size_feeder
 
 FT = 0.3048
@@ -162,6 +163,29 @@ def bus(a: argparse.Namespace) -> int:
     return 0 if r.passed else 1
 
 
+def transformer(a: argparse.Namespace) -> int:
+    kva = a.kva or next_standard_kva(a.load_kva, a.growth)
+    inp = TransformerInput(kva=kva, hv_v=a.hv, lv_v=a.lv, hv_connection=a.hv_conn, lv_connection=a.lv_conn,
+                           kind=a.kind, conductor=a.conductor, b_max_t=a.bmax, k_et=a.k, j_lv_a_mm2=a.j_lv,
+                           j_hv_a_mm2=a.j_hv, target_z_pct=a.target_z, power_factor=a.pf,
+                           source_mva=a.source_mva, doe_min_efficiency_pct=a.doe_eff)
+    r = design_for_impedance(inp) if (a.target_z and a.tune) else design(inp)
+    if a.json:
+        print(r.to_json())
+        return 0 if r.passed else 1
+    print(f"Transformer preliminary design - {kva:g} kVA, {a.hv:g} V {a.hv_conn} / {a.lv:g} V {a.lv_conn}, "
+          f"{a.kind}, {a.conductor} windings")
+    print(f"\nRESULT: {'PASS' if r.passed else 'FAIL'}")
+    for title, d in (("Design", r.design), ("Losses", r.losses), ("Impedance", r.impedance),
+                     ("Performance", r.performance), ("Short circuit", r.short_circuit)):
+        print(f"  {title}: " + ", ".join(f"{k} {v}" for k, v in d.items()))
+    for c in r.checks:
+        print(_row(c))
+    for n in r.notes:
+        print(f"Note: {n}")
+    return 0 if r.passed else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="pecalc", description="Power equipment engineering calculations")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -270,7 +294,31 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--json", action="store_true")
     b.set_defaults(func=bus)
 
+    t = sub.add_parser("transformer", help="preliminary transformer design and checks")
+    t.add_argument("--kva", type=float, help="rating; or give --load-kva to pick the next standard size")
+    t.add_argument("--load-kva", type=float)
+    t.add_argument("--growth", type=float, default=1.0, help="growth factor applied to --load-kva")
+    t.add_argument("--hv", type=float, required=True, help="HV line voltage")
+    t.add_argument("--lv", type=float, required=True, help="LV line voltage")
+    t.add_argument("--hv-conn", choices=["delta", "wye"], default="delta")
+    t.add_argument("--lv-conn", choices=["delta", "wye"], default="wye")
+    t.add_argument("--kind", choices=["liquid", "dry"], default="liquid")
+    t.add_argument("--conductor", choices=["Cu", "Al"], default="Cu")
+    t.add_argument("--bmax", type=float, default=1.55, help="design flux density, T")
+    t.add_argument("--k", type=float, default=0.45, help="Et = K sqrt(kVA) constant")
+    t.add_argument("--j-lv", type=float, default=3.0, help="LV current density, A/mm2")
+    t.add_argument("--j-hv", type=float, default=3.0, help="HV current density, A/mm2")
+    t.add_argument("--target-z", type=float, help="specified impedance, %%")
+    t.add_argument("--tune", action="store_true", help="tune window proportions to meet --target-z")
+    t.add_argument("--pf", type=float, default=0.9)
+    t.add_argument("--source-mva", type=float, help="utility fault MVA at HV terminals")
+    t.add_argument("--doe-eff", type=float, help="DOE minimum efficiency for this rating, %%")
+    t.add_argument("--json", action="store_true")
+    t.set_defaults(func=transformer, ambient=0)
+
     a = p.parse_args(argv)
+    if a.cmd == "transformer" and not (a.kva or a.load_kva):
+        p.error("transformer needs --kva or --load-kva")
     if a.ambient is None:
         a.ambient = 40.0 if a.cmd == "cablebus" else 30.0
     try:

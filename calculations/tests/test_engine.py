@@ -312,3 +312,53 @@ class SwitchgearBus(unittest.TestCase):
         r = analyse_bus(BusInput(bars_per_phase=2))
         self.assertTrue(1.0 < r.rac_over_rdc < 1.6)
         self.assertAlmostEqual(sum(r.lamination_share_pct) / 2, 100, delta=3)
+
+
+class Transformer(unittest.TestCase):
+    def _r(self, **kw):
+        from pecalc.transformer import TransformerInput, design
+        return design(TransformerInput(**kw))
+
+    def test_emf_equation_and_turns_ratio(self):
+        from pecalc.transformer import TransformerInput
+        inp = TransformerInput(kva=1500, hv_v=13800, lv_v=480)
+        r = self._r(kva=1500, hv_v=13800, lv_v=480)
+        d = r.design
+        # E = 4.44 f N Bm Ai
+        et = 4.44 * 60 * d["b_max_t"] * d["core_area_net_cm2"] / 1e4
+        self.assertAlmostEqual(et / d["volts_per_turn"], 1, delta=0.005)
+        # Delta HV / wye LV phase-voltage ratio within one turn
+        ratio = 13800 / (480 / math.sqrt(3))
+        self.assertLessEqual(abs(d["turns_hv"] - d["turns_lv"] * ratio), 1)
+
+    def test_rogowski_factor(self):
+        from pecalc.transformer import rogowski_factor
+        self.assertAlmostEqual(rogowski_factor(10, 1), 1 - 1 / (10 * math.pi), places=6)
+        self.assertLess(rogowski_factor(1, 1), rogowski_factor(5, 1))
+
+    def test_efficiency_and_fault_current_identities(self):
+        r = self._r(kva=1500, hv_v=13800, lv_v=480, power_factor=1.0)
+        nll, ll = r.losses["no_load_w"], r.losses["load_loss_w"]
+        self.assertAlmostEqual(r.performance["efficiency_pct"]["100%"], 1.5e6 / (1.5e6 + nll + ll) * 100, places=2)
+        self.assertAlmostEqual(r.performance["max_efficiency_load_pct"], math.sqrt(nll / ll) * 100, delta=0.1)
+        i_fl = 1.5e6 / (math.sqrt(3) * 480)
+        self.assertAlmostEqual(r.short_circuit["lv_fault_ka_rms"], i_fl / (r.impedance["z_pct"] / 100) / 1000,
+                               delta=0.05)
+
+    def test_typical_1500kva_liquid_losses_in_industry_range(self):
+        # Typical 1500 kVA, 15 kV class liquid-filled distribution transformer (industry practice,
+        # UNVERIFIED band): no-load 1-3 kW, load loss 8-20 kW, %Z 4-7.
+        r = self._r(kva=1500, hv_v=13800, lv_v=480)
+        self.assertTrue(1000 <= r.losses["no_load_w"] <= 3000)
+        self.assertTrue(8000 <= r.losses["load_loss_w"] <= 20000)
+        self.assertTrue(4 <= r.impedance["z_pct"] <= 7)
+
+    def test_impedance_tuning_hits_target(self):
+        from pecalc.transformer import TransformerInput, design_for_impedance
+        r = design_for_impedance(TransformerInput(kva=1500, hv_v=13800, lv_v=480, target_z_pct=5.75))
+        self.assertAlmostEqual(r.impedance["z_pct"], 5.75, delta=0.05)
+
+    def test_standard_kva_selection(self):
+        from pecalc.transformer import next_standard_kva
+        self.assertEqual(next_standard_kva(1180, 1.25), 1500)
+        self.assertEqual(next_standard_kva(300), 300)
