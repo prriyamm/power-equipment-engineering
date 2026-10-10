@@ -23,7 +23,7 @@ See [calculations/README.md](calculations/README.md) for every module and option
 
 ## Status
 
-Early development, usable for engineering review. Working and tested (60 reference tests, CI on Linux and Windows):
+Early development, usable for engineering review. Working and tested (47 reference tests, CI on Linux and Windows):
 
 - **Feeder & cable sizing** (NEC; CEC once its tables are entered) with lug schedule
 - **Cable bus** at any voltage: current sharing, table / datasheet / calculated (IEC 60287) ampacity, MV shield circulating currents, aluminum enclosure losses, magnetic field, fault forces

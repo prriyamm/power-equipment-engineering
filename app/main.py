@@ -14,6 +14,30 @@ from pathlib import Path
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(ROOT / "calculations"))
 
+
+def selftest() -> int:
+    """Run every bundled example through the engine and report renderer (checks builds; needs no display)."""
+    from pecalc import __version__ as version
+    from pecalc.cases import Case
+    from pecalc.report import render
+    examples = ROOT / "examples"
+    ok = True
+    for f in sorted(examples.glob("*.json")):
+        try:
+            case = Case.load(f)
+            result = case.run()
+            render(case, result)
+            print(f"ok    {f.name}: {'PASS' if getattr(result, 'passed', True) else 'FAIL'}")
+        except Exception as e:  # report and continue
+            ok = False
+            print(f"ERROR {f.name}: {e}")
+    print(f"pecalc {version}, examples from {examples}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__" and "--selftest" in sys.argv:
+    sys.exit(selftest())
+
 from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThreadPool, Signal  # noqa: E402
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPalette, QPen  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -639,25 +663,7 @@ def apply_theme(app: QApplication, dark: bool) -> None:
     app.setStyleSheet(LIGHT_QSS)
 
 
-def selftest() -> int:
-    """Run every bundled example through the engine and report renderer (used to check builds)."""
-    ok = True
-    for f in sorted(EXAMPLES.glob("*.json")):
-        try:
-            case = Case.load(f)
-            result = case.run()
-            render(case, result)
-            print(f"ok    {f.name}: {'PASS' if getattr(result, 'passed', True) else 'FAIL'}")
-        except Exception as e:  # report and continue
-            ok = False
-            print(f"ERROR {f.name}: {e}")
-    print(f"pecalc {__version__}, examples from {EXAMPLES}")
-    return 0 if ok else 1
-
-
 def main() -> int:
-    if "--selftest" in sys.argv:
-        return selftest()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
