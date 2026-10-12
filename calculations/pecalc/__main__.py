@@ -73,6 +73,7 @@ def cablebus(a: argparse.Namespace) -> int:
                         insulation_temp_c=a.insulation_temp, terminal_temp_c=a.terminal_temp, ambient_c=a.ambient,
                         ampacity_method=a.ampacity_method,
                         cable_ampacity_a=a.cable_ampacity, cable_ampacity_ambient_c=a.cable_ampacity_ambient,
+                        cable_ampacity_lambda1_ref=a.cable_ampacity_lambda1,
                         insulation=a.insulation, insulation_mm=a.insulation_mm, shield_mm=a.shield_mm,
                         jacket_mm=a.jacket_mm, jacket=a.jacket,
                         shield_bonding=a.shield_bonding, shield_area_mm2=a.shield_area,
@@ -255,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--jacket", choices=["PVC", "PE"], default="PVC")
     c.add_argument("--cable-ampacity", type=float, help="datasheet free-air rating per cable, A")
     c.add_argument("--cable-ampacity-ambient", type=float, default=40.0)
+    c.add_argument("--cable-ampacity-lambda1", type=float, default=0.0,
+                   help="shield loss factor lambda1 the datasheet rating assumes (0 = single-point / cross-bonded)")
     c.add_argument("--shield-bonding", choices=["none", "single_point", "both_ends"], default="none")
     c.add_argument("--shield-area", type=float, help="shield copper area per cable, mm2")
     c.add_argument("--shield-diameter", type=float, help="shield mean diameter, mm")
