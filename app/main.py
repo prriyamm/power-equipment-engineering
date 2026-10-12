@@ -41,17 +41,23 @@ if __name__ == "__main__" and "--selftest" in sys.argv:
 from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThreadPool, Signal  # noqa: E402
 from PySide6.QtGui import (  # noqa: E402
     QAction, QColor, QFont, QIcon, QKeySequence, QPageLayout, QPageSize, QPainter, QPalette, QPdfWriter, QPen,
-    QTextDocument,
+    QTextDocument, QImage,
 )
-from PySide6.QtCore import QMarginsF  # noqa: E402
+from PySide6.QtCore import QByteArray, QMarginsF, QUrl  # noqa: E402
+from PySide6.QtSvg import QSvgRenderer  # noqa: E402
+from PySide6.QtSvgWidgets import QSvgWidget  # noqa: E402
+import re  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
-    QSplitter, QStackedWidget, QStyleFactory, QTabWidget, QTextBrowser, QToolBar, QVBoxLayout, QWidget,
+    QSplitter, QStackedWidget, QStyleFactory, QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QToolBar,
+    QVBoxLayout, QWidget, QAbstractItemView, QHeaderView,
 )
 
 from pecalc import __version__  # noqa: E402
-from pecalc.cablebus import CableBusInput  # noqa: E402
+from pecalc.cablebus import CableBusInput, analyse  # noqa: E402
+from pecalc.cablebus_design import DesignRequest, design_options  # noqa: E402
+from pecalc.drawing import cablebus_svg  # noqa: E402
 from pecalc.cases import MODULES, Case  # noqa: E402
 from pecalc.conductors import SIZES  # noqa: E402
 from pecalc.lugs import LugInput  # noqa: E402
@@ -74,7 +80,19 @@ MODULE_INFO = {
     "lugs": ("Lugs", LugInput, "Lug style, quantity, stud and pad capacity"),
 }
 
+MODULE_INFO_DESIGN = ("Cable Bus Designer", DesignRequest,
+                      "Recommended cable bus designs: conductors, tiers, phase layout, enclosure size, GPO-3 blocks")
+
 GROUPS = {
+    "designer": [
+        ("Requirement", ["code", "voltage_v", "current_a", "power_factor", "length_m", "ambient_c", "material"]),
+        ("Cable", ["sizes", "insulation", "insulation_mm", "shield_mm", "jacket_mm", "shield_bonding",
+                   "ampacity_method", "max_per_phase"]),
+        ("Layout & enclosure", ["tier_options", "enclosure_widths_in", "enclosure_heights_in", "edge_clearance_mm",
+                                "vertical_clearance_mm", "max_loading_pct"]),
+        ("Short circuit & blocks", ["fault_ka", "x_over_r", "support_span_m", "block_material",
+                                    "block_thickness_mm", "block_rated_load_n"]),
+    ],
     "feeder": [
         ("System", ["code", "voltage_v", "phases", "continuous_a", "noncontinuous_a", "power_factor", "length_m"]),
         ("Conductor", ["material", "insulation_temp_c", "terminal_temp_c", "installation", "conduit",
@@ -122,7 +140,7 @@ CHOICES = {
     "termination": ["bus", "stud", "breaker"], "size": list(SIZES), "neutral_size": [""] + list(SIZES),
     "ground_size": [""] + list(SIZES), "insulation_temp_c": ["90", "75", "60"],
     "terminal_temp_c": ["", "75", "60", "90"], "equipment_terminal_temp_c": ["", "75", "60", "90"],
-    "phases": ["3", "1"],
+    "phases": ["3", "1"], "block_material": ["GPO-3", "GPO-2", "GPO-1"],
 }
 
 UNITS = (("_mm2", "mm²"), ("_a_mm2", "A/mm²"), ("_mm", "mm"), ("_m", "m"), ("_ka", "kA"), ("_a", "A"),
@@ -131,7 +149,11 @@ UNITS = (("_mm2", "mm²"), ("_a_mm2", "A/mm²"), ("_mm", "mm"), ("_m", "m"), ("_
 LABELS = {"kva": ("Rating", "kVA"), "x_over_r": ("X/R ratio", ""), "k_et": ("Et constant K", ""),
           "hv_v": ("HV line voltage", "V"), "lv_v": ("LV line voltage", "V"), "power_factor": ("Power factor", ""),
           "current_carrying_per_raceway": ("Current-carrying conductors per raceway", ""),
-          "hundred_percent_rated": ("Equipment rated 100 % continuous", ""), "sets": ("Parallel sets (blank = auto)", "")}
+          "hundred_percent_rated": ("Equipment rated 100 % continuous", ""), "sets": ("Parallel sets (blank = auto)", ""),
+          "sizes": ("Sizes to try", "kcmil"), "tier_options": ("Tiers to try", ""),
+          "enclosure_widths_in": ("Enclosure widths", "in"), "enclosure_heights_in": ("Enclosure heights", "in"),
+          "max_loading_pct": ("Max cable loading", "%"), "block_rated_load_n": ("Tested block rating", "N"),
+          "block_thickness_mm": ("Block thickness", "mm")}
 
 
 def label_for(name: str) -> tuple[str, str]:
@@ -159,7 +181,7 @@ class InputForm(QScrollArea):
     def __init__(self, module: str):
         super().__init__()
         self.module = module
-        self.cls = MODULE_INFO[module][1]
+        self.cls = MODULE_INFO_DESIGN[1] if module == "designer" else MODULE_INFO[module][1]
         self.fields = {f.name: f for f in dataclasses.fields(self.cls)}
         self.widgets: dict[str, QWidget] = {}
         body = QWidget()
@@ -221,8 +243,8 @@ class InputForm(QScrollArea):
                     i = w.findText(txt)
                 w.setCurrentIndex(i)
             else:
-                if isinstance(v, tuple):
-                    v = ", ".join(str(x) for x in v)
+                if isinstance(v, (tuple, list)):
+                    v = ", ".join(f"{x:g}" if isinstance(x, float) else str(x) for x in v)
                 w.setText("" if v is None else (f"{v:g}" if isinstance(v, float) else str(v)))
 
     def values(self) -> dict:
@@ -245,13 +267,36 @@ class InputForm(QScrollArea):
                 elif kind == "float":
                     out[n] = float(raw)
                 elif kind == "tuple":
-                    out[n] = tuple(float(x) for x in raw.split(",") if x.strip())
+                    conv = str if n == "sizes" else (int if n == "tier_options" else float)
+                    out[n] = tuple(conv(x.strip() if conv is str else float(x)) for x in raw.split(",") if x.strip())
                 else:
                     out[n] = raw
             except ValueError:
                 text, _ = label_for(n)
                 raise ValueError(f"'{text}' must be a number (got '{raw}')") from None
         return out
+
+
+# --- figures in rich text --------------------------------------------------------
+
+_SVG = re.compile(r"<svg\b.*?</svg>", re.S)
+
+
+def with_figures(doc: QTextDocument, html_doc: str, max_width: int = 720) -> str:
+    """Qt rich text cannot draw inline SVG: render each figure to an image resource."""
+    def repl(m, counter=[0]):
+        counter[0] += 1
+        r = QSvgRenderer(QByteArray(m.group(0).encode()))
+        size = r.defaultSize()
+        img = QImage(size * 2, QImage.Format_ARGB32)
+        img.fill(Qt.white)
+        p = QPainter(img)
+        r.render(p)
+        p.end()
+        name = f"figure{counter[0]}.png"
+        doc.addResource(QTextDocument.ImageResource, QUrl(name), img)
+        return f"<img src='{name}' width='{min(max_width, size.width())}'>"
+    return _SVG.sub(repl, html_doc)
 
 
 # --- cross-section drawing ----------------------------------------------------
@@ -366,14 +411,15 @@ class _Signals(QObject):
 
 
 class Job(QRunnable):
-    def __init__(self, case: Case):
+    def __init__(self, case, fn=None):
         super().__init__()
         self.case = case
+        self.fn = fn or (lambda c: c.run())
         self.signals = _Signals()
 
     def run(self):
         try:
-            result = self.case.run()
+            result = self.fn(self.case)
             self.signals.done.emit(self.case, result)
         except Exception as e:  # report every engine error to the user
             msg = str(e) if isinstance(e, ValueError) else f"{e}\n\n{traceback.format_exc()}"
@@ -470,7 +516,8 @@ class ModulePage(QWidget):
         self.banner.setText(("✔  PASS" if passed else "✖  FAIL") + f"   ·   input hash {case.input_hash()}")
         self.banner.setProperty("state", "pass" if passed else "fail")
         self._restyle()
-        self.report.setHtml(render(case, result, results_first=True))
+        html_doc = render(case, result, results_first=True)
+        self.report.setHtml(with_figures(self.report.document(), html_doc))
         if case.module == "cablebus":
             self.drawing.show_cablebus(case.input_object(), result)
         elif case.module == "bus":
@@ -484,6 +531,144 @@ class ModulePage(QWidget):
         self._restyle()
         self.report.setPlainText(msg)
         self.drawing.clear()
+
+    def _restyle(self):
+        self.banner.style().unpolish(self.banner)
+        self.banner.style().polish(self.banner)
+
+
+# --- cable bus designer page --------------------------------------------------------
+
+OPTION_COLUMNS = ["#", "Result", "Conductors per phase", "Tiers", "Phase pattern", "Enclosure (in)", "Loading %",
+                  "VD %", "Losses kW", "Cu mm²/phase", "Block MPa", "Notes"]
+
+
+class DesignerPage(QWidget):
+    status = Signal(str)
+    open_in_check = Signal(dict)
+
+    def __init__(self):
+        super().__init__()
+        title, _, blurb = MODULE_INFO_DESIGN
+        self.form = InputForm("designer")
+        self.form.set_values({"fault_ka": 65.0, "x_over_r": 20.0})
+        head = QLabel(f"<b style='font-size:15pt'>{title}</b><br><span>{blurb}</span>")
+        head.setWordWrap(True)
+        self.run_btn = QPushButton("Find designs")
+        self.run_btn.setObjectName("primary")
+        self.run_btn.clicked.connect(self.run)
+        left = QWidget()
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.addWidget(head)
+        ll.addWidget(self.form, 1)
+        ll.addWidget(self.run_btn)
+
+        self.banner = QLabel("Set the requirement and press Find designs")
+        self.banner.setObjectName("banner")
+        self.banner.setAlignment(Qt.AlignCenter)
+        self.table = QTableWidget(0, len(OPTION_COLUMNS))
+        self.table.setHorizontalHeaderLabels(OPTION_COLUMNS)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.itemSelectionChanged.connect(self.show_selected)
+        self.svg = QSvgWidget()
+        self.svg.setMinimumHeight(260)
+        self.detail = QLabel("")
+        self.detail.setWordWrap(True)
+        self.open_btn = QPushButton("Open selected design in Cable Bus check →")
+        self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self._open)
+        fig = QWidget()
+        fl = QVBoxLayout(fig)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.addWidget(self.svg, 1)
+        fl.addWidget(self.detail)
+        fl.addWidget(self.open_btn)
+        rsplit = QSplitter(Qt.Vertical)
+        rsplit.addWidget(self.table)
+        rsplit.addWidget(fig)
+        rsplit.setSizes([300, 460])
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addWidget(self.banner)
+        rl.addWidget(rsplit, 1)
+        split = QSplitter()
+        split.addWidget(left)
+        split.addWidget(right)
+        split.setSizes([480, 900])
+        QHBoxLayout(self).addWidget(split)
+        self.result = None
+
+    def run(self):
+        try:
+            req = DesignRequest(**self.form.values())
+        except (ValueError, TypeError) as e:
+            self._fail(str(e))
+            return
+        self.run_btn.setEnabled(False)
+        self.banner.setText("Generating and checking designs…")
+        self.banner.setProperty("state", "busy")
+        self._restyle()
+        job = Job(req, design_options)
+        job.signals.done.connect(self._done)
+        job.signals.failed.connect(self._fail)
+        QThreadPool.globalInstance().start(job)
+
+    def _done(self, req, result):
+        self.run_btn.setEnabled(True)
+        self.result = result
+        n_pass = sum(o.passed for o in result.options)
+        self.banner.setText(f"{n_pass} passing design(s) shown of {result.considered} checked  ·  "
+                            f"{req.voltage_v:g} V, {req.current_a:g} A, {req.code}")
+        self.banner.setProperty("state", "pass" if n_pass else "fail")
+        self._restyle()
+        self.table.setRowCount(0)
+        for o in result.options:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            cells = [o.rank, "PASS" if o.passed else "FAIL", f"{o.per_phase} x {o.size}", o.tiers, o.pattern,
+                     o.enclosure_in, o.max_loading_pct, o.vd_pct, o.loss_kw, o.copper_mm2_per_phase,
+                     "" if o.block_stress_mpa is None else f"{o.block_stress_mpa} / {o.block_allowable_mpa}",
+                     ", ".join(o.tags) or "; ".join(o.failed_checks)]
+            for col, v in enumerate(cells):
+                item = QTableWidgetItem(str(v))
+                if col == 1:
+                    item.setForeground(QColor("#1a7f37" if o.passed else "#c62828"))
+                self.table.setItem(row, col, item)
+        if result.options:
+            self.table.selectRow(0)
+        self.status.emit(self.banner.text())
+
+    def show_selected(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows or not self.result:
+            return
+        o = self.result.options[rows[0].row()]
+        inp = CableBusInput(**o.case_inputs)
+        r = analyse(inp)
+        self.svg.load(QByteArray(cablebus_svg(inp, r, self.result.request.block_material).encode()))
+        self.svg.renderer().setAspectRatioMode(Qt.KeepAspectRatio)
+        self.detail.setText(f"<b>{o.label}</b> · pattern {o.pattern} · cable OD {o.cable_od_mm} mm · inside "
+                            f"{o.inside_w_mm:.0f} x {o.inside_h_mm:.0f} mm · worst cable {o.max_loading_pct} % · "
+                            f"enclosure loss {o.enclosure_loss_kw} kW"
+                            + (f" · block {o.block_load_n} N" if o.block_load_n else ""))
+        self.open_btn.setEnabled(True)
+        self._selected = o
+
+    def _open(self):
+        self.open_in_check.emit(dict(self._selected.case_inputs))
+
+    def _fail(self, msg):
+        self.run_btn.setEnabled(True)
+        self.banner.setText(msg.splitlines()[0][:160])
+        self.banner.setProperty("state", "fail")
+        self._restyle()
 
     def _restyle(self):
         self.banner.style().unpolish(self.banner)
@@ -524,6 +709,11 @@ class MainWindow(QMainWindow):
         self.nav.setFixedWidth(200)
         self.stack = QStackedWidget()
         self.pages: dict[str, ModulePage] = {}
+        self.designer = DesignerPage()
+        self.designer.status.connect(lambda s: self.statusBar().showMessage(s, 8000))
+        self.designer.open_in_check.connect(self.open_design)
+        self.nav.addItem(QListWidgetItem("★ Cable Bus Designer"))
+        self.stack.addWidget(self.designer)
         for key, (title, _, _) in MODULE_INFO.items():
             self.nav.addItem(QListWidgetItem(title))
             page = ModulePage(key)
@@ -531,7 +721,7 @@ class MainWindow(QMainWindow):
             self.pages[key] = page
             self.stack.addWidget(page)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.nav.setCurrentRow(1)
+        self.nav.setCurrentRow(0)
 
         central = QWidget()
         lay = QHBoxLayout(central)
@@ -579,11 +769,8 @@ class MainWindow(QMainWindow):
     def meta(self) -> dict:
         return {"project": self.project.text(), "title": self.title_edit.text(), "revision": self.revision.text()}
 
-    def page(self) -> ModulePage:
-        return self.stack.currentWidget()
-
     def show_case(self, case: Case, path: Path | None):
-        idx = list(MODULE_INFO).index(case.module)
+        idx = list(MODULE_INFO).index(case.module) + 1
         self.nav.setCurrentRow(idx)
         self.project.setText(case.project)
         self.title_edit.setText(case.title)
@@ -592,6 +779,15 @@ class MainWindow(QMainWindow):
         self.current_file = path
         self.setWindowTitle(f"{APP_NAME} - {path.name if path else case.title or case.module}")
         self.pages[case.module].run()
+
+    def open_design(self, inputs: dict):
+        inputs = {k: (list(v) if isinstance(v, tuple) else v) for k, v in inputs.items()}
+        self.show_case(Case(module="cablebus", inputs=inputs, project=self.project.text(),
+                            title=self.title_edit.text() or "Cable bus design", revision=self.revision.text()), None)
+
+    def page(self):
+        w = self.stack.currentWidget()
+        return w if isinstance(w, ModulePage) else self.pages["cablebus"]
 
     def new_case(self):
         self.page().form.set_values({})
@@ -659,7 +855,7 @@ def export_pdf(html_doc: str, path: str) -> None:
     writer.setCreator(APP_NAME)
     doc = QTextDocument()
     doc.setDefaultFont(QFont("Helvetica", 9))
-    doc.setHtml(html_doc)
+    doc.setHtml(with_figures(doc, html_doc, 680))
     doc.setPageSize(writer.pageLayout().paintRectPixels(writer.resolution()).size().toSizeF())
     doc.print_(writer)
 
