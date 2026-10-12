@@ -23,6 +23,8 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 
+from . import validate
+
 MU0 = 4e-7 * math.pi
 STEEL_DENSITY = 7650.0  # kg/m3, grain-oriented electrical steel
 
@@ -66,6 +68,7 @@ class TransformerInput:
     z_tolerance_pct: float = 7.5     # of the specified value [UNVERIFIED: C57.12.00 two-winding tolerance]
     power_factor: float = 0.9
     source_mva: float | None = None  # available fault MVA at HV terminals (None: infinite bus)
+    source_x_over_r: float = 10.0    # utility source X/R at the HV terminals [UNVERIFIED typical; enter the utility's value]
     fault_duration_s: float = 2.0    # through-fault thermal duration
     conductor_proof_mpa: float = 100.0  # 0.2 % proof stress of winding conductor [UNVERIFIED: annealed Cu]
     doe_min_efficiency_pct: float | None = None  # from 10 CFR 431.196 for this kVA/BIL (enter from the rule)
@@ -88,6 +91,31 @@ class TransformerResult:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self) | {"passed": self.passed}, indent=2, default=str)
+
+
+# DOE test load point by equipment class. Efficiency standards: 10 CFR 431.196 (a) low-voltage dry-type,
+# (b) liquid-immersed, (c) medium-voltage dry-type; class definitions in 10 CFR 431.192 (low-voltage
+# dry-type: primary voltage <= 600 V). The per-unit test load (35 % LVDT, 50 % liquid and MVDT) is set by
+# the test procedure, Appendix A to Subpart K of Part 431. [UNVERIFIED: paragraph numbers from memory]
+DOE_TEST_POINT_CITATION = "10 CFR 431.192 / 431.196 / Part 431 Subpart K App. A [UNVERIFIED paragraph]"
+
+
+def doe_test_point(kind: str, primary_v: float) -> tuple[str, float]:
+    """(DOE equipment class, per-unit test load). Classified by the primary (input) voltage."""
+    if kind == "liquid":
+        return "liquid-immersed", 0.50
+    if primary_v <= 600:
+        return "low-voltage dry-type", 0.35
+    return "medium-voltage dry-type", 0.50
+
+
+def source_impedance_pu(kva: float, source_mva: float | None, x_over_r: float) -> complex:
+    """Utility source impedance on the transformer base: |Z| = kVA/1000 / MVA_sc at angle atan(X/R)."""
+    if not source_mva:
+        return 0j
+    mag = kva / 1000 / source_mva
+    r = mag / math.hypot(1.0, x_over_r)
+    return complex(r, r * x_over_r)
 
 
 def next_standard_kva(load_kva: float, growth: float = 1.0) -> float:
@@ -123,6 +151,15 @@ def design(inp: TransformerInput) -> TransformerResult:
         raise ValueError("kind must be liquid or dry")
     if inp.conductor not in WINDING:
         raise ValueError("conductor must be Cu or Al")
+    validate.voltage("hv_v", inp.hv_v)
+    validate.voltage("lv_v", inp.lv_v)
+    validate.power_factor("power_factor", inp.power_factor)
+    validate.clearing_time("fault_duration_s", inp.fault_duration_s)
+    validate.x_over_r("source_x_over_r", inp.source_x_over_r)
+    if inp.source_mva is not None and inp.source_mva <= 0:
+        raise ValueError(f"source_mva must be greater than 0 MVA (or None for an infinite bus), got {inp.source_mva!r}")
+    if inp.kva <= 0:
+        raise ValueError(f"kva must be greater than 0, got {inp.kva!r}")
     f, s = inp.frequency_hz, inp.kva * 1000
     kv_hv = inp.hv_v / 1000
     vph_lv, vph_hv = _phase(inp.lv_v, inp.lv_connection), _phase(inp.hv_v, inp.hv_connection)
@@ -184,17 +221,22 @@ def design(inp: TransformerInput) -> TransformerResult:
     def eff(load):
         out = s * load * inp.power_factor
         return out / (out + nll + load_loss * load ** 2) * 100
-    doe_load = 0.5 if (inp.kind == "liquid" or inp.lv_v > 600) else 0.35
+    doe_class, doe_load = doe_test_point(inp.kind, inp.hv_v)
     doe_temp = 55.0 if inp.kind == "liquid" else 75.0
     ll_doe = load_loss * (t0 + doe_temp) / (t0 + t_ref)  # I2R-dominated correction [approximation]
     eff_doe = s * doe_load / (s * doe_load + nll + ll_doe * doe_load ** 2) * 100
     sin_phi = math.sqrt(1 - inp.power_factor ** 2)
     reg = r_pct * inp.power_factor + x_pct * sin_phi + (x_pct * inp.power_factor - r_pct * sin_phi) ** 2 / 200
 
-    # Short circuit at LV terminals.
-    z_pu = z_pct / 100 + (inp.kva / 1000 / inp.source_mva if inp.source_mva else 0)
+    # Short circuit at LV terminals: source and transformer impedances added as phasors
+    # (each with its own X/R), on the transformer kVA base.
+    z_tx = complex(r_pct, x_pct) / 100
+    z_src = source_impedance_pu(inp.kva, inp.source_mva, inp.source_x_over_r)
+    z_tot = z_tx + z_src
+    z_pu = abs(z_tot)
+    xr_tot = z_tot.imag / z_tot.real
     isc_lv = i_line_lv / z_pu
-    kappa = 1.02 + 0.98 * math.exp(-3 / x_over_r)
+    kappa = 1.02 + 0.98 * math.exp(-3 / xr_tot)
     i_peak = math.sqrt(2) * kappa * isc_lv
     # Thermal: IEC 60076-5 adiabatic winding temperature after the fault.
     t1 = t_ref
@@ -223,9 +265,9 @@ def design(inp: TransformerInput) -> TransformerResult:
               inp.target_z_pct + tol, "%", abs(z_pct - inp.target_z_pct) <= tol,
               f"target {inp.target_z_pct} % +/- {inp.z_tolerance_pct} %")
     if inp.doe_min_efficiency_pct:
-        check("Efficiency at DOE test point", "10 CFR 431.196 (value entered by user)", eff_doe,
-              inp.doe_min_efficiency_pct, "%", eff_doe >= inp.doe_min_efficiency_pct,
-              f"{doe_load:.0%} load, load loss at {doe_temp:.0f} C")
+        check("Efficiency at DOE test point", f"10 CFR 431.196 (value entered by user); {DOE_TEST_POINT_CITATION}",
+              eff_doe, inp.doe_min_efficiency_pct, "%", eff_doe >= inp.doe_min_efficiency_pct,
+              f"{doe_class}, {doe_load:.0%} load, load loss at {doe_temp:.0f} C")
     check(f"Winding temperature after {inp.fault_duration_s:g} s through-fault", "IEC 60076-5 method; "
           "C57.12.00 limit [UNVERIFIED]", t_fault, t_lim, "C", t_fault <= t_lim,
           f"LV current density {jsc:.1f} A/mm2 during fault")
@@ -235,12 +277,15 @@ def design(inp: TransformerInput) -> TransformerResult:
     notes = [
         f"Preliminary design only (empirical K = {inp.k_et}, Kw = {kw:.3f}, core fill {inp.core_fill}); "
         "refine with detailed design and FEA, and confirm by test (IEEE C57.12.90 / C57.12.91).",
-        f"DOE test point: {doe_load:.0%} load, load loss corrected to {doe_temp:.0f} C; enter the 10 CFR 431.196 "
+        f"DOE test point: {doe_class} (HV winding taken as the primary), {doe_load:.0%} load, load loss corrected to {doe_temp:.0f} C; enter the 10 CFR 431.196 "
         "minimum efficiency for this kVA and BIL (tables not loaded).",
         "Inner (LV) winding radial buckling and axial forces are not checked yet.",
     ]
     if not inp.source_mva:
         notes.append("Secondary fault current assumes an infinite source (no utility impedance).")
+    else:
+        notes.append(f"Secondary fault current: source {inp.source_mva:g} MVA at X/R {inp.source_x_over_r:g} added to "
+                     f"the transformer impedance as phasors; combined X/R {xr_tot:.2f}.")
 
     r = lambda v, n=1: round(v, n)
     return TransformerResult(
@@ -260,6 +305,7 @@ def design(inp: TransformerInput) -> TransformerResult:
                      "regulation_pct": r(reg, 2),
                      "max_efficiency_load_pct": r(math.sqrt(nll / load_loss) * 100)},
         short_circuit={"lv_fault_ka_rms": r(isc_lv / 1000, 2), "lv_fault_peak_ka": r(i_peak / 1000, 2),
+                       "total_z_pu": r(z_pu, 5), "total_x_over_r": r(xr_tot, 2),
                        "winding_temp_after_fault_c": r(t_fault), "hv_hoop_stress_mpa": r(hoop, 1)},
         checks=checks, notes=notes)
 

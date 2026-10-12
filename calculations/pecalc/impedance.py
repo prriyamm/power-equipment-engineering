@@ -28,6 +28,8 @@ import cmath
 import math
 from dataclasses import dataclass, field
 
+from . import validate
+
 MU0_2PI = 2e-7
 
 
@@ -176,6 +178,7 @@ def solve_sharing(conductors: list[Conductor], groups: dict[str, Group],
 
 def balanced_three_phase(i_rms: float, pf: float = 1.0, lagging: bool = True,
                          names: tuple[str, str, str] = ("A", "B", "C")) -> dict[str, Group]:
-    phi = math.acos(max(-1.0, min(1.0, pf))) * (-1 if lagging else 1)
+    validate.power_factor("power_factor", pf)
+    phi = math.acos(pf) * (-1 if lagging else 1)
     return {n: Group(n, "phase", cmath.rect(i_rms, phi + k * -2 * math.pi / 3))
             for k, n in enumerate(names)}

@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from . import validate
 from .impedance import Conductor
 
 N_PER_M_TO_LBF_PER_FT = 0.0685218
@@ -28,6 +29,7 @@ def peak_factor(x_over_r: float, freq: float = 60.0) -> float:
     Approximation k = sqrt(2) (1.02 + 0.98 e^(-3 R/X)) (IEC 60909-0 eq. 55),
     used for reporting; the force calculation itself is time-domain.
     """
+    validate.x_over_r("x_over_r", x_over_r)
     return math.sqrt(2) * (1.02 + 0.98 * math.exp(-3 / x_over_r))
 
 
@@ -57,6 +59,7 @@ def fault_forces(conductors: list[Conductor], share: dict[int, complex], fault_k
     vector sum per body is tracked, so a bar split into filaments gets its
     true resultant (internal filament forces cancel in pairs).
     """
+    validate.x_over_r("x_over_r", x_over_r)
     w = 2 * math.pi * freq
     tau = x_over_r / w
     phi = math.atan(x_over_r)

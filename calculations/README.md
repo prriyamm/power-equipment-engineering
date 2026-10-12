@@ -40,7 +40,9 @@ python3 -m unittest discover -s tests -v
 |---|---|
 | `conductors.py` | sizes, geometry, DC/AC resistance (resistivity + temperature, IEC 60287 skin/proximity), GMR, reactance |
 | `ampacity.py` | NEC / CEC tables (status-flagged data), ambient and grouping correction, clause references |
-| `sizing.py` | feeder sizing: parallel sets, terminal and continuous-load rules, voltage drop, losses, short-circuit withstand |
+| `sizing.py` | feeder sizing: parallel sets, terminal (110.14(C), always Table 310.16) and continuous-load rules, NEC 240.4(D) small-conductor limits, voltage drop, losses, short-circuit withstand |
+| `reactance_derived.py` | NEC Table 9 reactance plus DERIVED rows for 700/800/900 and 1250–2000 kcmil (ln-kcmil interpolation/extrapolation, touching-trefoil floor); flagged in results |
+| `validate.py` | shared input checks (voltage, power factor, clearing time, X/R) raising `ValueError` |
 | `impedance.py` | multi-conductor impedance (Carson), current sharing among paralleled conductors, bonded shield circulating currents |
 | `forces.py` | time-domain short-circuit forces on any conductor layout (worst case over inception angle) |
 | `thermal.py` | calculated ampacity: IEC 60287 / Neher-McGrath thermal model for cables in free air, dielectric loss, shield loss factor |
@@ -57,6 +59,8 @@ python3 -m unittest discover -s tests -v
 | `data/ampacity_nec.json` | UNVERIFIED | Check Tables 310.16 / 310.17 against NFPA 70-2023, then set `VERIFIED` with name and date |
 | `data/ampacity_cec.json` | PLACEHOLDER (copy of NEC values) | Enter CSA C22.1 Tables 1–4; CEC is refused until then |
 | `data/reactance_nec_table9.json` | UNVERIFIED | Check against NEC Chapter 9 Table 9 |
+| `data/nec_240_4d_small_conductors.json` | UNVERIFIED (from memory, NEC 2023) | Check NEC 240.4(D) |
+| `reactance_derived.py` (computed) | DERIVED — UNVERIFIED | Not a published value; replace with manufacturer data where available |
 
 CEC spot values gathered during research (unverified; confirm against CSA C22.1), to test against once the tables are entered: 750 kcmil Cu Table 1 90 °C = 805 A, 75 °C = 691 A; 1000 kcmil Cu Table 1 90 °C = 960 A, 75 °C = 823 A; 750 kcmil Cu Table 2 75 °C = 418 A; 750 / 1000 kcmil Al Table 4 75 °C = 339 / 392 A.
 
