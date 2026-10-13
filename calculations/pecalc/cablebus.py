@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 
 from . import ampacity as amp
 from . import conductors as cond
+from . import validate
 from .field import LIMITS_UT, b_rms_ut
 from .forces import N_PER_M_TO_LBF_PER_FT, fault_forces
 from .impedance import Conductor, Group, balanced_three_phase, solve_sharing
@@ -384,6 +385,7 @@ def phase_voltage_drops(res, voltage_v: float, power_factor: float, length_m: fl
 # --- main -------------------------------------------------------------------
 
 def analyse(inp: CableBusInput) -> CableBusResult:
+    validate.voltage("voltage_v", inp.voltage_v)
     size = cond.normalize_size(inp.size)
     inp.size = size
     cons = construction(inp)

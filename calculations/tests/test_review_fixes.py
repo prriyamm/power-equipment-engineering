@@ -228,6 +228,12 @@ class InvalidInputs(unittest.TestCase):
             with self.subTest(case=i), self.assertRaises(ValueError):
                 f()
 
+    def test_cablebus(self):
+        from pecalc.cablebus import CableBusInput, analyse
+        for v in (0, -600, float("nan")):
+            with self.subTest(voltage_v=v), self.assertRaisesRegex(ValueError, "voltage_v must be"):
+                analyse(CableBusInput(voltage_v=v))
+
     def test_message_names_the_input(self):
         with self.assertRaisesRegex(ValueError, r"power_factor must be in the range \(0, 1\]"):
             size_feeder(FeederInput(continuous_a=100, power_factor=1.2))
