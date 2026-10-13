@@ -119,7 +119,7 @@ GROUPS = {
     "transformer": [
         ("Rating", ["kva", "hv_v", "lv_v", "hv_connection", "lv_connection", "kind", "conductor", "power_factor"]),
         ("Design", ["b_max_t", "k_et", "j_lv_a_mm2", "j_hv_a_mm2", "window_ratio", "target_z_pct"]),
-        ("Compliance & fault", ["doe_min_efficiency_pct", "source_mva", "fault_duration_s", "conductor_proof_mpa"]),
+        ("Compliance & fault", ["doe_min_efficiency_pct", "source_mva", "source_x_over_r", "fault_duration_s", "conductor_proof_mpa"]),
     ],
     "lugs": [
         ("Circuit", ["code", "size", "material", "sets_per_phase", "phases", "circuit_current_a",
@@ -146,7 +146,7 @@ CHOICES = {
 UNITS = (("_mm2", "mm²"), ("_a_mm2", "A/mm²"), ("_mm", "mm"), ("_m", "m"), ("_ka", "kA"), ("_a", "A"),
          ("_v", "V"), ("_c", "°C"), ("_pct", "%"), ("_hz", "Hz"), ("_mpa", "MPa"), ("_n", "N"), ("_s", "s"),
          ("_t", "T"), ("_mva", "MVA"))
-LABELS = {"kva": ("Rating", "kVA"), "x_over_r": ("X/R ratio", ""), "k_et": ("Et constant K", ""),
+LABELS = {"kva": ("Rating", "kVA"), "x_over_r": ("X/R ratio", ""), "source_x_over_r": ("Source X/R ratio", ""), "k_et": ("Et constant K", ""),
           "hv_v": ("HV line voltage", "V"), "lv_v": ("LV line voltage", "V"), "power_factor": ("Power factor", ""),
           "current_carrying_per_raceway": ("Current-carrying conductors per raceway", ""),
           "hundred_percent_rated": ("Equipment rated 100 % continuous", ""), "sets": ("Parallel sets (blank = auto)", ""),

@@ -171,7 +171,8 @@ def transformer(a: argparse.Namespace) -> int:
     inp = TransformerInput(kva=kva, hv_v=a.hv, lv_v=a.lv, hv_connection=a.hv_conn, lv_connection=a.lv_conn,
                            kind=a.kind, conductor=a.conductor, b_max_t=a.bmax, k_et=a.k, j_lv_a_mm2=a.j_lv,
                            j_hv_a_mm2=a.j_hv, target_z_pct=a.target_z, power_factor=a.pf,
-                           source_mva=a.source_mva, doe_min_efficiency_pct=a.doe_eff)
+                           source_mva=a.source_mva, source_x_over_r=a.source_xr,
+                           doe_min_efficiency_pct=a.doe_eff)
     r = design_for_impedance(inp) if (a.target_z and a.tune) else design(inp)
     if a.json:
         print(r.to_json())
@@ -367,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--tune", action="store_true", help="tune window proportions to meet --target-z")
     t.add_argument("--pf", type=float, default=0.9)
     t.add_argument("--source-mva", type=float, help="utility fault MVA at HV terminals")
+    t.add_argument("--source-xr", type=float, default=10.0,
+                   help="utility source X/R at HV terminals (default 10, UNVERIFIED typical)")
     t.add_argument("--doe-eff", type=float, help="DOE minimum efficiency for this rating, %%")
     t.add_argument("--json", action="store_true")
     t.set_defaults(func=transformer, ambient=0)

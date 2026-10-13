@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, dataclass, field
+from functools import cache
 
 from . import ampacity as amp
 from . import conductors as cond
+from . import reactance_derived as rxd
+from . import validate
 
 FT_PER_M = 1 / cond.FT
 
@@ -95,12 +98,25 @@ class FeederResult:
 
 def _reactance_ohm_per_m(inp: FeederInput, size: str) -> tuple[float, str]:
     if inp.installation == "raceway":
-        data = json.loads((amp.DATA / "reactance_nec_table9.json").read_text())
-        x_kft = data[inp.conduit].get(size)
-        if x_kft is not None:
-            return x_kft / 1000 / cond.FT, "NEC Ch. 9 Table 9"
-    # Cables touching in trefoil (tray / free air) or sizes beyond Table 9.
+        found = rxd.reactance_per_1000ft(size, inp.conduit)
+        if found is not None:
+            x_kft, derived = found
+            basis = f"DERIVED from NEC Ch. 9 Table 9 [{rxd.DERIVED_STATUS}]" if derived else "NEC Ch. 9 Table 9"
+            return x_kft / 1000 / cond.FT, basis
+    # Cables touching in trefoil (tray / free air).
     return cond.reactance_ohm_per_m(size, cond.cable_od_mm(size), inp.frequency_hz), "geometric (trefoil, touching)"
+
+
+@cache
+def _small_conductor_limits() -> dict:
+    """NEC 240.4(D) maximum overcurrent device rating by size (data/nec_240_4d_small_conductors.json)."""
+    return json.loads((amp.DATA / "nec_240_4d_small_conductors.json").read_text())
+
+
+def small_conductor_limit_a(material: str, size: str) -> float | None:
+    """NEC 240.4(D) limit in A, or None when 240.4(D) does not list the size. [UNVERIFIED data]"""
+    v = _small_conductor_limits().get(material, {}).get(cond.normalize_size(size))
+    return None if v is None else float(v)
 
 
 def _short_circuit_check(inp: FeederInput, size: str, sets: int) -> Check | None:
@@ -132,7 +148,11 @@ def evaluate(inp: FeederInput, size: str, sets: int) -> Option:
                             cond.size_index(size) >= cond.size_index(min_size), f"min {cond.size_label(min_size)}"))
 
     a_ins = amp.table_ampacity(code, inp.installation, mat, size, inp.insulation_temp_c)
-    a_term = amp.table_ampacity(code, inp.installation, mat, size, inp.terminal_temp_c)
+    # NEC 110.14(C): termination limits use the 60/75 C column of Table 310.16 whatever the
+    # installation; free-air (Table 310.17) ampacity applies to the conductor only.
+    # CEC Rule 4-006 is left on the installation's own table [UNVERIFIED which CEC table applies].
+    term_install = "raceway" if code == "NEC" else inp.installation
+    a_term = amp.table_ampacity(code, term_install, mat, size, inp.terminal_temp_c)
     if a_ins is None or a_term is None:
         raise ValueError(f"No {code} {inp.installation} ampacity for {mat} {size}")
 
@@ -145,10 +165,20 @@ def evaluate(inp: FeederInput, size: str, sets: int) -> Option:
     if code == "NEC":
         cont_mult = 1.0 if inp.hundred_percent_rated else 1.25
         required_term = (cont_mult * inp.continuous_a + inp.noncontinuous_a) / sets
+        term_table = amp.table_info(code, term_install).table_name
         checks.append(Check("Terminal-column ampacity >= 125 % continuous + non-continuous",
                             f"{clauses['continuous']}(a), {clauses['terminal']}",
                             a_term, round(required_term, 1), "A", a_term >= required_term,
-                            f"{inp.terminal_temp_c} C column, no derating"))
+                            f"{term_table} {inp.terminal_temp_c} C column, no derating"))
+        # NEC 240.4(D): the overcurrent device for 18-10 AWG may not exceed the listed rating.
+        # The device must be at least 125 % continuous + non-continuous (215.3; 100 % if listed),
+        # so that minimum rating is checked against the limit. Small sizes cannot be paralleled.
+        limit = small_conductor_limit_a(mat, size)
+        if limit is not None:
+            ocpd_min = cont_mult * inp.continuous_a + inp.noncontinuous_a
+            checks.append(Check("Minimum OCPD rating <= small-conductor limit", "NEC 240.4(D) [data UNVERIFIED]",
+                                round(ocpd_min, 1), limit, "A", ocpd_min <= limit,
+                                f"{cond.size_label(size)} {mat}: max overcurrent device {limit:g} A"))
         checks.append(Check("Derated ampacity >= load", f"{clauses['continuous']}(b)",
                             round(derated, 1), round(per_set_load, 1), "A", derated >= per_set_load,
                             f"{a_ins:.0f} A x {f_amb:.3f} ambient x {f_ccc:.2f} grouping"))
@@ -194,6 +224,16 @@ def size_feeder(inp: FeederInput) -> FeederResult:
         raise ValueError("material must be 'Cu' or 'Al'")
     if inp.load_a <= 0:
         raise ValueError("load current must be positive")
+    validate.voltage("voltage_v", inp.voltage_v)
+    validate.power_factor("power_factor", inp.power_factor)
+    if inp.fault_clearing_s is not None:
+        validate.clearing_time("fault_clearing_s", inp.fault_clearing_s)
+    if inp.fault_ka is not None and inp.fault_ka <= 0:
+        raise ValueError(f"fault_ka must be greater than 0 kA, got {inp.fault_ka!r}")
+    if inp.installation not in amp.INSTALLATIONS:
+        raise ValueError(f"installation must be one of {amp.INSTALLATIONS}")
+    if inp.installation == "raceway" and inp.conduit not in rxd.RACEWAYS:
+        raise ValueError(f"conduit must be one of {rxd.RACEWAYS}")
     if inp.voltage_v > 2000:
         raise ValueError("This module covers 0-2000 V conductors; medium-voltage tables are not loaded yet")
     if inp.terminal_temp_c is None:
@@ -217,9 +257,20 @@ def size_feeder(inp: FeederInput) -> FeederResult:
     notes = [f"Ampacity table: {inp.code} {info.table_name} ({info.edition}) - data status {status}."]
     if status != "VERIFIED":
         notes.append(f"WARNING: {info.source}")
-    notes.append("Overcurrent device selection and protection (NEC 240.4 / CEC 14-104) are not checked here.")
+    if inp.code == "NEC":
+        notes.append("NEC 240.4(D) small-conductor limits are checked against the minimum overcurrent device "
+                     "rating (data UNVERIFIED); the rest of 240.4 and device selection are not checked here.")
+        if inp.installation == "free_air":
+            notes.append("Terminations checked against Table 310.16 at the terminal temperature (NEC 110.14(C)); "
+                         "conductor ampacity from Table 310.17.")
+    else:
+        notes.append("Overcurrent device selection and protection (CEC 14-104) are not checked here.")
     if not options:
         notes.append("No conductor size passes every check within the allowed number of sets.")
+    best = options[0] if options else None
+    if best and inp.installation == "raceway" and best.size in rxd.DERIVED_SIZES:
+        notes.append(f"WARNING: reactance for {best.size_label} in {inp.conduit} conduit is not in NEC Table 9; "
+                     f"value used is {rxd.DERIVED_STATUS}. Method: {rxd.DERIVED_METHOD}")
     lugs = None
     if options:
         from .lugs import LugInput, select_lugs

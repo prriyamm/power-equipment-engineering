@@ -26,6 +26,7 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 
+from . import validate
 from .forces import N_PER_M_TO_LBF_PER_FT, fault_forces
 from .impedance import Conductor, balanced_three_phase, solve_sharing
 
@@ -174,6 +175,10 @@ def analyse_bus(inp: BusInput) -> BusResult:
         raise ValueError("orientation must be face_to_face or edge_to_edge")
     if inp.finish not in EMISSIVITY:
         raise ValueError(f"finish must be one of {sorted(EMISSIVITY)}")
+    validate.voltage("voltage_v", inp.voltage_v)
+    validate.x_over_r("x_over_r", inp.x_over_r)
+    if inp.fault_ka is not None and inp.fault_ka <= 0:
+        raise ValueError(f"fault_ka must be greater than 0 kA, got {inp.fault_ka!r}")
     rho20, alpha = BAR_MATERIALS[inp.material]
     notes: list[str] = []
 

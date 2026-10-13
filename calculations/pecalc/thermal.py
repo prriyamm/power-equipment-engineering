@@ -26,9 +26,20 @@ import math
 from dataclasses import dataclass
 
 from . import conductors as cond
+from . import validate
 
 # Thermal resistivity K m/W (IEC 60287-2-1 Table 1).
 THERMAL_RESISTIVITY = {"XLPE": 3.5, "EPR": 5.0, "PVC": 5.0, "PE": 3.5, "XHHW": 3.5, "RW90": 3.5}
+# EPR depends on the cable's rated voltage: 3.5 K m/W up to and including 3 kV, 5.0 above.
+# [UNVERIFIED: IEC 60287-2-1 Table 1 as reproduced in secondary sources; not checked against the standard]
+EPR_LV_RESISTIVITY, EPR_LV_MAX_KV = 3.5, 3.0
+
+
+def insulation_resistivity(insulation: str, rated_voltage_v: float) -> float:
+    """Insulation thermal resistivity (K m/W); EPR switches at 3 kV rated voltage."""
+    if insulation == "EPR" and rated_voltage_v <= EPR_LV_MAX_KV * 1000:
+        return EPR_LV_RESISTIVITY
+    return THERMAL_RESISTIVITY[insulation]
 # Relative permittivity and loss tangent (IEC 60287-1-1 Table 3).
 DIELECTRIC = {"XLPE": (2.5, 0.001), "EPR": (3.0, 0.005), "PVC": (8.0, 0.1), "XHHW": (2.5, 0.001),
               "RW90": (2.5, 0.001)}
@@ -52,6 +63,7 @@ class CableConstruction:
     jacket: str = "PVC"
     voltage_v: float = 600.0           # line-to-line, for dielectric loss
     max_temp_c: float = 90.0
+    rated_voltage_v: float | None = None  # cable voltage rating; None: use voltage_v
 
     @property
     def dc_mm(self) -> float:
@@ -93,6 +105,7 @@ class AmpacityResult:
 
 
 def dielectric_loss(c: CableConstruction, freq: float = 60.0) -> float:
+    validate.voltage("voltage_v", c.voltage_v)
     eps, tan_d = DIELECTRIC.get(c.insulation, (2.5, 0.001))
     cap = eps / (18 * math.log(c.di_mm / c.dc_mm)) * 1e-9  # F/m
     u0 = c.voltage_v / math.sqrt(3)
@@ -101,7 +114,10 @@ def dielectric_loss(c: CableConstruction, freq: float = 60.0) -> float:
 
 def free_air_ampacity(c: CableConstruction, ambient_c: float = 40.0, installation: str = "isolated",
                       lambda1: float = 0.0, freq: float = 60.0, spacing_mm: float | None = None) -> AmpacityResult:
-    rho_i = THERMAL_RESISTIVITY[c.insulation]
+    validate.voltage("voltage_v", c.voltage_v)
+    rated_v = c.rated_voltage_v if c.rated_voltage_v is not None else c.voltage_v
+    validate.voltage("rated_voltage_v", rated_v)
+    rho_i = insulation_resistivity(c.insulation, rated_v)
     t1 = rho_i / (2 * math.pi) * math.log(1 + 2 * c.insulation_mm / c.dc_mm)
     t2 = 0.0
     t3 = (THERMAL_RESISTIVITY[c.jacket] / (2 * math.pi) * math.log(1 + 2 * c.jacket_mm / c.da_mm)
