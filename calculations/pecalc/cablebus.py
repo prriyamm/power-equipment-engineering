@@ -60,6 +60,10 @@ class CableBusInput:
     ampacity_method: str = "auto"
     cable_ampacity_a: float | None = None      # datasheet free-air rating per cable
     cable_ampacity_ambient_c: float = 40.0
+    # Shield loss factor lambda1 already included in the datasheet rating. Datasheet ratings for
+    # single-point or cross-bonded shields carry no circulating loss, so the default is 0.
+    # Used to derate the datasheet rating when shields are bonded at both ends.
+    cable_ampacity_lambda1_ref: float = 0.0
     # Cable construction (needed for "calculated"; also gives OD and shield geometry).
     insulation: str = "XLPE"
     insulation_mm: float | None = None         # incl. conductor/insulation screens for MV
@@ -305,6 +309,78 @@ def _load_rated_ambient(code: str) -> float:
     return float(json.loads((amp.DATA / f"ampacity_{code.lower()}.json").read_text())["_meta"]["rated_ambient_c"])
 
 
+def datasheet_shield_derating(lambda1_actual: float, lambda1_ref: float = 0.0) -> float:
+    """Factor applied to a datasheet ampacity for shield circulating-current loss.
+
+    Method: IEC 60287-1-1 section 2.3 (sheath/screen loss factor lambda1) applied
+    through the steady-state rating equation of IEC 60287-1-1 section 1.4.1.1,
+    which is the same heat balance as Neher-McGrath (AIEE 1957, "ycs" shield
+    loss term):
+
+        I = sqrt[(dtheta - Wd(...)) / (R T1 + n R (1 + lambda1) T2
+                                        + n R (1 + lambda1 + lambda2)(T3 + T4))]
+
+    For an unarmoured cable in air (lambda2 = 0, T2 = 0) with the external
+    thermal resistance T3 + T4 dominant, I is proportional to
+    1 / sqrt(1 + lambda1), so a rating made with loss factor lambda1_ref
+    becomes, with the actual loss factor lambda1_actual:
+
+        I_derated = I_datasheet * sqrt((1 + lambda1_ref) / (1 + lambda1_actual))
+
+    Assumptions:
+    - lambda1_actual is the circulating-current loss factor from the sharing
+      solve (shield loss / core loss for the same cable); eddy loss lambda1''
+      is neglected, as it is in IEC 60287 for both-ends-bonded single-core
+      cables except large segmental conductors.
+    - Neglecting T1 (insulation) and the dielectric loss term overstates the
+      reduction slightly, so the factor is conservative.
+    - The factor is capped at 1: a datasheet rating is never raised.
+    - lambda1_ref is the loss factor the datasheet already assumes: 0 for
+      single-point or cross-bonded ratings (the usual basis), unless the
+      manufacturer states otherwise.
+    [Equation form from memory; verify clause numbers against IEC 60287-1-1:2006.]
+    """
+    if lambda1_actual < 0 or lambda1_ref < 0:
+        raise ValueError("Shield loss factors lambda1 must be >= 0")
+    return min(1.0, math.sqrt((1 + lambda1_ref) / (1 + lambda1_actual)))
+
+
+def phase_voltage_drops(res, voltage_v: float, power_factor: float, length_m: float,
+                        lagging: bool = True) -> dict[str, tuple[float, float]]:
+    """Voltage drop per phase, in % of that phase's own sending-end voltage.
+
+    Each phase group p carries I_p at power factor pf, so its sending-end
+    voltage is V_s,p = (V_LL / sqrt 3) at angle (arg I_p + phi), phi = acos(pf)
+    (current lagging). The drop phasor dV_p = (group drop per m) x length comes
+    from the sharing solve, which includes mutual coupling, unequal sharing and
+    induced shield / enclosure currents. Per phase:
+
+        exact  = (|V_s,p| - |V_s,p - dV_p|) / |V_s,p| x 100
+        approx = Re(dV_p . conj(V_s,p)) / |V_s,p|^2 x 100
+
+    The approximate form is the projection of the drop onto the source voltage,
+    i.e. the usual I (R cos phi + X sin phi) L estimate (IEEE Std 141 /
+    NEC Chapter 9 Table 9 Note 2 form) [from memory]. Measuring every phase
+    against its own source voltage makes the result independent of how the
+    phases are labelled.
+
+    Returns {phase: (exact %, approx %)}.
+    """
+    v_ph = voltage_v / math.sqrt(3)
+    phi = math.acos(max(-1.0, min(1.0, power_factor))) * (1 if lagging else -1)
+    out = {}
+    for p, d in res.group_drop_v_per_m.items():
+        i_p = res.groups[p].current
+        if not i_p:
+            continue
+        vs = cmath.rect(v_ph, cmath.phase(i_p) + phi)
+        dv = d * length_m
+        exact = (abs(vs) - abs(vs - dv)) / abs(vs) * 100
+        approx = (dv * vs.conjugate()).real / abs(vs) ** 2 * 100
+        out[p] = (exact, approx)
+    return out
+
+
 # --- main -------------------------------------------------------------------
 
 def analyse(inp: CableBusInput) -> CableBusResult:
@@ -335,6 +411,13 @@ def analyse(inp: CableBusInput) -> CableBusResult:
 
     pitch = inp.spacing_mm or 2 * od
     labels = {c.label: i for i, c in enumerate(cs)}
+
+    def shield_lambda1(i: int) -> float:
+        # Circulating-current shield loss factor of cable i (0 without both-ends bonding).
+        core_loss = res.losses_w_per_m[i]
+        s = labels.get(f"S-{cs[i].label}")
+        return round(res.losses_w_per_m[s] / core_loss, 4) if s is not None and core_loss else 0.0
+
     a_term = None
     if method == "calculated":
         if cons is None:
@@ -343,9 +426,7 @@ def analyse(inp: CableBusInput) -> CableBusResult:
         cache: dict[float, object] = {}
 
         def ampacity_for(i: int):
-            core_loss = res.losses_w_per_m[i]
-            s = labels.get(f"S-{cs[i].label}")
-            lam = round(res.losses_w_per_m[s] / core_loss, 4) if s is not None and core_loss else 0.0
+            lam = shield_lambda1(i)
             if lam not in cache:
                 cache[lam] = free_air_ampacity(cons, inp.ambient_c, installation, lam, inp.frequency_hz, pitch)
             return cache[lam]
@@ -357,6 +438,8 @@ def analyse(inp: CableBusInput) -> CableBusResult:
         if method == "table":
             a_term = amp.table_ampacity(inp.code, "free_air", inp.material, size, inp.terminal_temp_c)
 
+    derate_ds = method == "datasheet" and with_shields
+    ds_factors = []
     rows = []
     worst = None
     for i, c in enumerate(cs):
@@ -366,6 +449,13 @@ def analyse(inp: CableBusInput) -> CableBusResult:
         if method == "calculated":
             ar = ampacity_for(i)
             a_i, basis_i = ar.ampacity_a, ar.summary()
+        elif derate_ds:
+            lam = shield_lambda1(i)
+            k = datasheet_shield_derating(lam, inp.cable_ampacity_lambda1_ref)
+            ds_factors.append((k, lam))
+            a_i = a_cable * k
+            basis_i = (f"{basis_fixed} x shield derating {k:.3f} (lambda1 {lam:.3f} vs datasheet "
+                       f"{inp.cable_ampacity_lambda1_ref:.3f}, IEC 60287-1-1 2.3)")
         else:
             a_i, basis_i = a_cable, basis_fixed
         row = ConductorRow(i, c.group, round(c.y_mm / (inp.tier_spacing_mm or pitch)),
@@ -378,10 +468,10 @@ def analyse(inp: CableBusInput) -> CableBusResult:
     max_loading = worst[0].loading_pct
     basis = worst[1]
 
-    # Voltage drop: worst phase, sending-end phase voltage as reference.
-    v_ph = inp.voltage_v / math.sqrt(3)
-    vd_pct = max((v_ph - abs(v_ph - d * inp.length_m)) / v_ph * 100
-                 for d in res.group_drop_v_per_m.values())
+    # Voltage drop: each phase against its own sending-end voltage; the worst phase is checked.
+    vd_by_phase = phase_voltage_drops(res, inp.voltage_v, inp.power_factor, inp.length_m)
+    vd_phase = max(vd_by_phase, key=lambda p: vd_by_phase[p][0])
+    vd_pct = vd_by_phase[vd_phase][0]
     cond_loss = res.group_loss_w_per_m("phase") * inp.length_m
     shield_loss = sum(p for p, c in zip(res.losses_w_per_m, cs) if c.group == "SHIELD") * inp.length_m
     encl_loss = sum(p for p, c in zip(res.losses_w_per_m, cs) if c.group == "ENCLOSURE") * inp.length_m
@@ -420,7 +510,8 @@ def analyse(inp: CableBusInput) -> CableBusResult:
     if a_term is not None:
         check("Most heavily loaded conductor within termination rating", clauses["terminal"], max_cur, a_term,
               "A", max_cur <= a_term, f"{inp.terminal_temp_c} C column, no ambient correction")
-    check("Voltage drop (worst phase)", clauses["vd"], vd_pct, inp.max_vd_pct, "%", vd_pct <= inp.max_vd_pct)
+    check("Voltage drop (worst phase)", clauses["vd"], vd_pct, inp.max_vd_pct, "%", vd_pct <= inp.max_vd_pct,
+          f"phase {vd_phase}, each phase against its own sending-end voltage")
 
     f_nm = f_lbf = support = None
     if inp.fault_ka:
@@ -439,8 +530,26 @@ def analyse(inp: CableBusInput) -> CableBusResult:
         notes.append(f"Shields bonded both ends: max circulating current {shield_i:.0f} A, "
                      f"shield loss {shield_loss/1000:.2f} kW ({shield_loss / max(cond_loss, 1e-9) * 100:.1f} % of "
                      f"conductor loss). Single-point or cross bonding removes most of this.")
+    if derate_ds:
+        k_min, lam_max = min(ds_factors)
+        notes.append(
+            "Datasheet ampacity derated for shield circulating current (shields bonded both ends): "
+            "I = I_datasheet x sqrt((1 + lambda1_ref) / (1 + lambda1)), IEC 60287-1-1 2.3 shield loss factor in "
+            "the IEC 60287 / Neher-McGrath rating equation. Assumes the datasheet rating already includes "
+            f"lambda1_ref = {inp.cable_ampacity_lambda1_ref:.3f} (0 = single-point or cross-bonded rating), "
+            "external thermal resistance dominant, eddy loss and dielectric loss term neglected (conservative), "
+            f"factor capped at 1. Per-cable lambda1 from the sharing solve; worst lambda1 {lam_max:.3f}, "
+            f"factor {k_min:.3f} (range {k_min:.3f}-{max(f for f, _ in ds_factors):.3f}). [UNVERIFIED method "
+            "simplification; check against the cable maker's both-ends-bonded rating where available.]")
+        if k_min < 0.9:
+            notes.append(f"WARNING: shield circulating current derates the datasheet ampacity by "
+                         f"{(1 - k_min) * 100:.1f} % (> 10 %). Consider single-point or cross bonding, or a "
+                         "manufacturer rating for both-ends bonding.")
     if inp.voltage_v > 2000 and inp.shield_bonding == "none":
         notes.append("MV cable selected with shield_bonding 'none': set 'single_point' or 'both_ends' to state the design.")
+    notes.append("Voltage drop by phase, exact / approximate I(R cos phi + X sin phi) form, each against its own "
+                 "sending-end phase voltage: " + ", ".join(f"{p} {e:.2f} / {a:.2f} %"
+                                                          for p, (e, a) in sorted(vd_by_phase.items())) + ".")
     if method == "table":
         notes.append(f"{inp.code} table data status: {amp.table_info(inp.code, 'free_air').status}.")
     if inp.enclosure_width_mm:

@@ -162,6 +162,78 @@ class CableBus(unittest.TestCase):
         self.assertGreater(both.shield_current_a, 0)
 
 
+class CableBusVoltageDrop(unittest.TestCase):
+    def test_hand_check_balanced_trefoil(self):
+        # Balanced trefoil, one conductor per phase, side s = 100 mm, GMR 10 mm, R = 0.05 ohm/km,
+        # 480 V, 1000 A at pf 0.8 lagging, 60 m. By symmetry each phase sees
+        #   dV_p = I_p (z_self - z_mutual) L = I_p (R + j w 2e-7 ln(s / GMR)) L
+        # (the Carson earth-return terms cancel because Ia + Ib + Ic = 0).
+        #   X = 2 pi 60 x 2e-7 x ln(10) = 1.73611e-4 ohm/m
+        #   I = 1000 /-36.87 deg = 800 - j600 A
+        #   dV = (800 - j600)(5e-5 + j1.73611e-4) x 60 = 8.6500 + j6.5333 V
+        #   Vs = 480 / sqrt 3 = 277.128 V (phase A at 0 deg)
+        #   |Vs - dV| = |268.478 - j6.533| = 268.558 V
+        #   exact  = (277.128 - 268.558) / 277.128 = 3.0926 %
+        #   approx = I L (R cos phi + X sin phi) / Vs = 8.6500 / 277.128 = 3.1213 %
+        # Every phase gives the same value because each is measured against its own source voltage.
+        from pecalc.cablebus import phase_voltage_drops
+        h = 100 * math.sqrt(3) / 2
+        cs = [Conductor(0, 0, "A", 5e-5, 10), Conductor(100, 0, "B", 5e-5, 10), Conductor(50, h, "C", 5e-5, 10)]
+        res = solve_sharing(cs, balanced_three_phase(1000, 0.8))
+        vd = phase_voltage_drops(res, 480, 0.8, 60)
+        for p in "ABC":
+            self.assertAlmostEqual(vd[p][0], 3.0926, places=3)
+            self.assertAlmostEqual(vd[p][1], 3.1213, places=3)
+
+    def test_invariant_to_phase_labelling(self):
+        # Cyclic relabelling (A->B->C->A) is the same physical bus; only the names change.
+        # Before the fix, flat ABC / BCA / CAB gave 4.29 / 2.14 / 2.94 %.
+        for kw, patterns in (
+                (dict(current_a=600, conductors_per_phase=1, length_m=150), ("ABC", "BCA", "CAB")),
+                (dict(current_a=1200, conductors_per_phase=2, length_m=100), ("ABCCBA", "BCAACB", "CABBAC"))):
+            vds = [analyse(CableBusInput(voltage_v=600, size="750", pattern=p, **kw)).vd_pct for p in patterns]
+            for v in vds[1:]:
+                self.assertAlmostEqual(v, vds[0], places=6)
+        self.assertAlmostEqual(analyse(CableBusInput(voltage_v=600, size="750", pattern="BCA", current_a=600,
+                                                     conductors_per_phase=1, length_m=150)).vd_pct, 4.292, places=2)
+
+    def test_invariant_with_shields_bonded_both_ends(self):
+        base = dict(voltage_v=15000, current_a=2000, conductors_per_phase=2, size="750", cable_od_mm=45,
+                    cable_ampacity_a=900, shield_area_mm2=16, shield_mean_diameter_mm=38, shield_bonding="both_ends")
+        vds = [analyse(CableBusInput(**base, pattern=p)).vd_pct for p in ("ABCCBA", "BCAACB", "CABBAC")]
+        self.assertAlmostEqual(vds[1], vds[0], places=6)
+        self.assertAlmostEqual(vds[2], vds[0], places=6)
+
+
+class DatasheetShieldDerating(unittest.TestCase):
+    BASE = dict(voltage_v=15000, current_a=2000, conductors_per_phase=3, size="750", cable_od_mm=45,
+                cable_ampacity_a=900, shield_area_mm2=16, shield_mean_diameter_mm=38)
+
+    def test_factor_hand_values(self):
+        from pecalc.cablebus import datasheet_shield_derating as k
+        self.assertEqual(k(0.0, 0.0), 1.0)                       # no shield loss: no change
+        self.assertAlmostEqual(k(0.21, 0.0), 1 / 1.1, places=9)  # sqrt(1 / 1.21) = 0.90909
+        self.assertAlmostEqual(k(0.21, 0.1), math.sqrt(1.1 / 1.21), places=9)  # = 0.95346
+        self.assertEqual(k(0.0, 0.2), 1.0)                       # never raises a datasheet rating
+
+    def test_single_point_bonding_is_not_derated(self):
+        r = analyse(CableBusInput(**self.BASE, shield_bonding="single_point"))
+        self.assertTrue(all(c.ampacity_a == 900.0 for c in r.conductors))
+        self.assertNotIn("shield derating", r.ampacity_basis)
+
+    def test_both_ends_bonding_derates_by_own_lambda1(self):
+        from pecalc.cablebus import datasheet_shield_derating
+        r = analyse(CableBusInput(**self.BASE, shield_bonding="both_ends"))
+        self.assertLess(max(c.ampacity_a for c in r.conductors), 900.0)
+        lam = float(r.ampacity_basis.split("lambda1 ")[1].split()[0])
+        worst = max(r.conductors, key=lambda c: c.loading_pct)
+        self.assertAlmostEqual(worst.ampacity_a, 900 * datasheet_shield_derating(lam), delta=0.2)
+        self.assertTrue(any(n.startswith("WARNING: shield circulating current") for n in r.notes))
+        # A datasheet that already assumes the same loss is not derated again.
+        same = analyse(CableBusInput(**self.BASE, shield_bonding="both_ends", cable_ampacity_lambda1_ref=10.0))
+        self.assertTrue(all(c.ampacity_a == 900.0 for c in same.conductors))
+
+
 if __name__ == "__main__":
     unittest.main()
 
