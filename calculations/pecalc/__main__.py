@@ -78,8 +78,8 @@ def cablebus(a: argparse.Namespace) -> int:
                         insulation=a.insulation, insulation_mm=a.insulation_mm, shield_mm=a.shield_mm,
                         jacket_mm=a.jacket_mm, jacket=a.jacket,
                         shield_bonding=a.shield_bonding, shield_area_mm2=a.shield_area,
-                        shield_mean_diameter_mm=a.shield_diameter, fault_ka=a.fault_ka, x_over_r=a.xr,
-                        support_span_m=a.support_span, max_vd_pct=a.max_vd,
+                        shield_mean_diameter_mm=a.shield_diameter, fault_ka=a.fault_ka,
+                        fault_clearing_s=a.fault_time, x_over_r=a.xr, support_span_m=a.support_span, max_vd_pct=a.max_vd,
                         enclosure_width_mm=a.enclosure_width, enclosure_height_mm=a.enclosure_height,
                         side_thickness_mm=a.side_mm, cover_thickness_mm=a.cover_mm,
                         covers_continuous=a.covers_continuous, enclosure_alloy=a.alloy,
@@ -296,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--cable-ampacity-ambient", type=float, default=40.0)
     c.add_argument("--cable-ampacity-lambda1", type=float, default=0.0,
                    help="shield loss factor lambda1 the datasheet rating assumes (0 = single-point / cross-bonded)")
+    c.add_argument("--fault-time", type=float, help="fault clearing time, s (enables conductor withstand check)")
     c.add_argument("--shield-bonding", choices=["none", "single_point", "both_ends"], default="none")
     c.add_argument("--shield-area", type=float, help="shield copper area per cable, mm2")
     c.add_argument("--shield-diameter", type=float, help="shield mean diameter, mm")

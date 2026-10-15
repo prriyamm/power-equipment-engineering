@@ -107,7 +107,7 @@ GROUPS = {
                              "shield_mm", "jacket_mm", "shield_bonding"]),
         ("Enclosure", ["enclosure_width_mm", "enclosure_height_mm", "side_thickness_mm", "covers_continuous",
                        "enclosure_alloy"]),
-        ("Short circuit", ["fault_ka", "x_over_r", "support_span_m"]),
+        ("Short circuit", ["fault_ka", "fault_clearing_s", "x_over_r", "support_span_m"]),
     ],
     "bus": [
         ("Rating", ["standard", "current_a", "voltage_v", "ambient_c", "internal_air_rise_c", "max_rise_c"]),

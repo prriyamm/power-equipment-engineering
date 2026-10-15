@@ -285,5 +285,58 @@ class EprThermalResistivity(unittest.TestCase):
         self.assertAlmostEqual(old.t1, 0.11797, places=5)
 
 
+class CableBusShortCircuitWithstand(unittest.TestCase):
+    """P17: ICEA P-32-382 adiabatic conductor withstand in the cable bus module (same formula as sizing.py)."""
+
+    @staticmethod
+    def _sc(r):
+        return [c for c in r.checks if c["name"] == "Conductor short-circuit withstand"]
+
+    def test_three_750_cu_per_phase_half_second(self):
+        from pecalc.cablebus import CableBusInput, analyse
+        # A = 3 x 750 000 = 2 250 000 cmil; Cu: K = 0.0297, T0 = 234; T1 = 90 C, T2 = 250 C, t = 0.5 s.
+        # (250 + 234) / (90 + 234) = 484 / 324 = 1.493827; log10 = 0.174300
+        # 0.0297 x 0.174300 / 0.5 = 0.0103534; sqrt = 0.101752
+        # I = 2 250 000 x 0.101752 = 228 942 A = 228.94 kA >= 50 kA -> pass
+        r = analyse(CableBusInput(fault_ka=50, fault_clearing_s=0.5))
+        (c,) = self._sc(r)
+        self.assertEqual(c["clause"], "ICEA P-32-382")
+        self.assertAlmostEqual(c["value"], 228.94, places=2)
+        self.assertEqual(c["limit"], 50)
+        self.assertTrue(c["passed"])
+
+    def test_single_4_0_cu_one_second_fails(self):
+        from pecalc.cablebus import CableBusInput, analyse
+        # A = 211 600 cmil; 0.0297 x 0.174300 / 1.0 = 0.0051767; sqrt = 0.071949
+        # I = 211 600 x 0.071949 = 15 224 A = 15.22 kA < 20 kA -> fail
+        r = analyse(CableBusInput(size="4/0", conductors_per_phase=1, current_a=300, fault_ka=20,
+                                  fault_clearing_s=1.0))
+        (c,) = self._sc(r)
+        self.assertAlmostEqual(c["value"], 15.22, places=2)
+        self.assertFalse(c["passed"])
+        self.assertFalse(r.passed)
+
+    def test_matches_feeder_formula(self):
+        # Same helper as sizing._short_circuit_check: 3 sets of 750 Cu at 0.5 s gives the same 228.9 kA.
+        f = evaluate(FeederInput(continuous_a=1500, voltage_v=600, terminal_temp_c=75, fault_ka=50,
+                                  fault_clearing_s=0.5), "750", 3)
+        sc = [c for c in f.checks if c.clause == "ICEA P-32-382"][0]
+        self.assertEqual(sc.value, 228.9)
+        self.assertAlmostEqual(cond.adiabatic_withstand_a("Cu", 2_250_000, 90, 250, 0.5), 228941.68, places=1)
+
+    def test_skipped_without_clearing_time(self):
+        from pecalc.cablebus import CableBusInput, analyse
+        r = analyse(CableBusInput(fault_ka=50))
+        self.assertEqual(self._sc(r), [])
+        self.assertIn("Conductor short-circuit withstand not checked: give fault_clearing_s.", r.notes)
+        self.assertEqual(self._sc(analyse(CableBusInput(fault_clearing_s=0.5))), [])
+
+    def test_invalid_clearing_time(self):
+        from pecalc.cablebus import CableBusInput, analyse
+        for t in (0, -0.1, float("nan")):
+            with self.subTest(t=t), self.assertRaisesRegex(ValueError, "fault_clearing_s must be"):
+                analyse(CableBusInput(fault_ka=50, fault_clearing_s=t))
+
+
 if __name__ == "__main__":
     unittest.main()
