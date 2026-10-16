@@ -1,7 +1,7 @@
 """Cable bus designer: generate, check and rank complete design options.
 
 For a required voltage and current, every practical combination of conductor
-size, conductors per phase and stacked tiers (1, 2 or 3) is laid out with the
+size, conductors per phase and stacked tiers (1 to 4) is laid out with the
 code spacing (one cable diameter clear between cables and between tiers,
 NEC 370 / CSA C22.2 No. 273 free-air basis), fitted into the smallest standard
 enclosure, and run through the full cable bus analysis (phase-pattern search,
@@ -44,7 +44,7 @@ class DesignRequest:
     sizes: tuple[str, ...] | None = None          # default: 500-1000 kcmil
     max_per_phase: int = 12
     extra_per_phase: int = 2                       # also try this many more than the minimum
-    tier_options: tuple[int, ...] = (1, 2, 3)
+    tier_options: tuple[int, ...] = (1, 2, 3, 4)
     ampacity_method: str = "auto"
     insulation_temp_c: int = 90
     terminal_temp_c: int = 90
