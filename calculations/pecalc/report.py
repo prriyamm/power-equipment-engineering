@@ -54,7 +54,7 @@ def _checks(checks: list) -> tuple[str, bool]:
         c = dataclasses.asdict(c) if dataclasses.is_dataclass(c) else c
         ok &= c["passed"]
         rows.append([("PASS" if c["passed"] else "FAIL"), c["name"], f"{c['value']} {c['unit']}",
-                     f"{c['limit']} {c['unit']}", c["clause"], c.get("note", "")])
+                     "not determined" if c["limit"] is None else f"{c['limit']} {c['unit']}", c["clause"], c.get("note", "")])
     return _table(rows, ["", "Check", "Value", "Limit", "Basis", "Note"]), ok
 
 
@@ -116,6 +116,18 @@ def _sections(module: str, r, inp=None) -> list[tuple[str, str]]:
         for title, d in (("Design", r.design), ("Losses", r.losses), ("Impedance", r.impedance),
                          ("Performance", r.performance), ("Short circuit", r.short_circuit)):
             s.append((title, _kv(d)))
+        doe = getattr(r, "doe", None) or {}
+        if doe:
+            s.append(("DOE 10 CFR 431.196 efficiency", _kv({
+                "category": doe["category_label"], "status": doe["status"], "manufacture date": doe["date"],
+                "window": (doe["window"] or {}).get("paragraph", "none"), "test load (pu)": doe["test_load_pu"],
+                "efficiency at test load (%)": round(doe["efficiency_pct"], 3),
+                "required minimum (%)": "n/a" if doe["required_pct"] is None else round(doe["required_pct"], 3),
+                "basis": doe["message"], "data status": f"{doe['data_status']} (eCFR {doe['snapshot']})"})))
+            s.append(("DOE minimum by compliance window", _table(
+                [[w["paragraph"], w["table"], w["from"], w["to"] or "", "n/a" if w["required_pct"] is None
+                  else round(w["required_pct"], 3)] for w in doe["by_window"]],
+                ["Paragraph", "Table", "From", "Before", "Minimum %"])))
     elif module == "lugs":
         s.append(("Lug schedule", _table(
             [[l.quantity, l.terminal, l.conductor, l.style, l.lug_material, l.stud_in, l.hole_spacing_in or "",

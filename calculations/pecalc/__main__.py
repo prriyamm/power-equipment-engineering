@@ -23,7 +23,7 @@ def _length_m(value: float, unit: str) -> float:
 
 def _row(c) -> str:
     mark = "PASS" if c["passed"] else "FAIL"
-    return f"  [{mark}] {c['name']}: {c['value']} vs {c['limit']} {c['unit']}  ({c['clause']}){'  - ' + c['note'] if c.get('note') else ''}"
+    return f"  [{mark}] {c['name']}: {c['value']} vs {'not determined' if c['limit'] is None else c['limit']} {c['unit']}  ({c['clause']}){'  - ' + c['note'] if c.get('note') else ''}"
 
 
 def feeder(a: argparse.Namespace) -> int:
@@ -179,7 +179,8 @@ def transformer(a: argparse.Namespace) -> int:
                            kind=a.kind, conductor=a.conductor, b_max_t=a.bmax, k_et=a.k, j_lv_a_mm2=a.j_lv,
                            j_hv_a_mm2=a.j_hv, target_z_pct=a.target_z, power_factor=a.pf,
                            source_mva=a.source_mva, source_x_over_r=a.source_xr,
-                           doe_min_efficiency_pct=a.doe_eff)
+                           doe_min_efficiency_pct=a.doe_eff, bil_kv=a.bil, doe_date=a.doe_date,
+                           doe_submersible=a.submersible)
     r = design_for_impedance(inp) if (a.target_z and a.tune) else design(inp)
     if a.json:
         print(r.to_json())
@@ -382,7 +383,11 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--source-mva", type=float, help="utility fault MVA at HV terminals")
     t.add_argument("--source-xr", type=float, default=10.0,
                    help="utility source X/R at HV terminals (default 10, UNVERIFIED typical)")
-    t.add_argument("--doe-eff", type=float, help="DOE minimum efficiency for this rating, %%")
+    t.add_argument("--doe-eff", type=float, help="extra user minimum efficiency at the DOE point, %% (the 10 CFR "
+                   "431.196 tables are built in)")
+    t.add_argument("--bil", type=float, help="HV winding BIL, kV (needed for the medium-voltage dry-type DOE minimum)")
+    t.add_argument("--doe-date", help="manufacture date YYYY-MM-DD selecting the 10 CFR 431.196 window (default today)")
+    t.add_argument("--submersible", action="store_true", help="liquid-immersed submersible unit (DOE)")
     t.add_argument("--json", action="store_true")
     t.set_defaults(func=transformer, ambient=0)
 
