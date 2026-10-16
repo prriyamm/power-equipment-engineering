@@ -141,6 +141,33 @@ class CableBus(unittest.TestCase):
         with self.assertRaises(ValueError):
             candidate_patterns(2, 4)
 
+    def test_four_tier_patterns_and_validation(self):
+        # 4 tiers: 3n conductors split into 4 tiers of 3n/4, each a multiple of 3 -> n multiple of 4.
+        pats = candidate_patterns(4, 4)       # 12 conductors, 3 per tier, k = 1
+        self.assertIn("ABC/ABC/ABC/ABC", pats)
+        self.assertIn("ABC/CBA/ABC/CBA", pats)
+        for p in pats:
+            rows = p.split("/")
+            self.assertEqual(len(rows), 4)
+            self.assertTrue(all(len(r) == 3 for r in rows))
+        pats8 = candidate_patterns(8, 4)      # 24 conductors, 6 per tier, k = 2
+        self.assertIn("ABCCBA/ABCCBA/ABCCBA/ABCCBA", pats8)
+        for n in (1, 2, 3, 5, 6, 7):
+            if (3 * n) % 4:
+                with self.assertRaisesRegex(ValueError, "cannot be split evenly into 4 tiers"):
+                    candidate_patterns(n, 4)
+
+    def test_four_tier_analysis(self):
+        # 8 x 750 kcmil per phase in 4 tiers of 6 (3 x 8 = 24 conductors).
+        r = analyse(CableBusInput(voltage_v=600, current_a=4000, conductors_per_phase=8, tiers=4, size="750",
+                                  enclosure_width_mm=500, enclosure_height_mm=500))
+        self.assertEqual(len(r.conductors), 24)
+        self.assertEqual(sorted({c.tier for c in r.conductors}), [0, 1, 2, 3])
+        self.assertAlmostEqual(r.tier_pitch_mm, r.pitch_mm)
+        self.assertAlmostEqual(sum(c.current_a for c in r.conductors if c.phase == "A"), 4000, delta=0.5)
+        with self.assertRaisesRegex(ValueError, "cannot be split evenly into 4 tiers"):
+            analyse(CableBusInput(voltage_v=600, conductors_per_phase=6, tiers=4))
+
     def test_reference_concept_4000a(self):
         # Reference design: 4000 A, 600 V, 6 x 750 kcmil Cu per phase.
         r = analyse(CableBusInput(voltage_v=600, current_a=4000, conductors_per_phase=6, tiers=2, size="750"))
@@ -476,6 +503,16 @@ class CableBusDesigner(unittest.TestCase):
             self.assertGreaterEqual(o.inside_w_mm + 2.0, needed_w)  # OD is reported rounded
         tags = {t for o in r.options for t in o.tags}
         self.assertTrue({"least copper", "smallest enclosure", "most margin"} <= tags)
+
+    def test_designer_includes_four_tier_options(self):
+        from pecalc.cablebus_design import DesignRequest, design_options
+        self.assertEqual(DesignRequest().tier_options, (1, 2, 3, 4))
+        r = design_options(DesignRequest(voltage_v=600, current_a=6000, top_n=30))
+        four = [o for o in r.options if o.tiers == 4]
+        self.assertTrue(four, "expected a 4-tier option for 6000 A")
+        self.assertTrue(all(o.per_phase % 4 == 0 for o in four))
+        r3 = design_options(DesignRequest(voltage_v=600, current_a=6000, tier_options=(1, 2, 3)))
+        self.assertTrue(all(o.tiers <= 3 for o in r3.options))
 
     def test_more_tiers_gives_narrower_enclosure(self):
         from pecalc.cablebus_design import DesignRequest, design_options
