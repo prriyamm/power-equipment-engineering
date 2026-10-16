@@ -16,6 +16,7 @@ Calculated (thermal-model) ampacity is on the roadmap.
 from __future__ import annotations
 
 import cmath
+import functools
 import itertools
 import json
 import math
@@ -47,6 +48,11 @@ class CableBusInput:
     length_m: float = 60.0
     material: str = "Cu"
     size: str = "750"
+    # Cable library: "standard" (NEC sizes; default), "mv_construction" (same path, MV construction inputs) or
+    # "dlo_2000v" (manufacturer row from data/dlo_cables.json, selected by cable_id such as
+    # "southwire_dlo_2000v:444.4"). Library cables take area, OD, DC resistance and ampacity from the data file.
+    cable_type: str = "standard"
+    cable_id: str | None = None
     conductors_per_phase: int = 3
     tiers: int = 1
     cable_od_mm: float | None = None   # required above 2000 V; estimated for LV if omitted
@@ -150,6 +156,7 @@ class CableBusResult:
     pitch_mm: float = 0.0
     tier_pitch_mm: float = 0.0
     sheath: dict | None = None   # shield standing voltage and bonding comparison (shielded cable only)
+    cable_data: dict | None = None   # library cable used (data, status, source), None for standard cable
 
     @property
     def passed(self) -> bool:
@@ -157,6 +164,187 @@ class CableBusResult:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self) | {"passed": self.passed}, indent=2, default=str)
+
+
+# --- cable library (manufacturer rows) --------------------------------------
+# Library cables are only reachable through cable_type "dlo_2000v", so the non-standard DLO sizes
+# (262.6 ... 1111 kcmil) stay out of the NEC size list used by the code tables.
+
+LIBRARY_FILE = amp.DATA / "dlo_cables.json"
+DLO_STRANDING_FACTOR = cond.STRANDING_FACTOR   # 1.02, same as the standard path; not verified for Class I stranding
+# Conductor diameter / sqrt(area) for Class I stranding: 0.782 in / (sqrt(444 400 cmil) / 1000 in) = 1.173.
+# Single-point ratio from the Southwire 444.4 kcmil product page. [UNVERIFIED proxy, used only when not printed]
+DLO_DIAMETER_RATIO = 0.782 / (math.sqrt(444400) / 1000)
+CABLE_TYPES = ("standard", "mv_construction", "dlo_2000v")
+
+
+@dataclass(frozen=True)
+class CableSpec:
+    cable_id: str
+    manufacturer: str
+    series: str
+    size: str                       # size key as printed, e.g. "444.4" or "4/0"
+    size_label: str
+    area_cmil: float
+    od_mm: float                    # printed nominal OD
+    insulation_mm: float            # printed insulation wall
+    diameter_mm: float              # conductor diameter used (printed, or proxy below)
+    diameter_source: str            # "printed" or "proxy"
+    rdc_ref: tuple[float, float] | None   # printed DC resistance (ohm per 1000 ft, reference C), or None
+    rated_voltage_v: float
+    temp_c: int
+    ampacity_free_air_a: float      # printed free-air ampacity, 90 C conductor
+    ampacity_ref_ambient_c: float
+    ampacity_basis: str
+    basis_stated: bool
+    standard_nec_size: bool
+    listed_rhh: bool
+    status: str
+    source_name: str
+    source_url: str
+    source_date: str
+    flags: tuple[str, ...]
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@functools.cache
+def _library() -> dict:
+    return json.loads(LIBRARY_FILE.read_text(encoding="utf-8"))
+
+
+def _library_size_label(size: str) -> str:
+    if "/" in size or float(size) < 250:
+        return f"{size} AWG"
+    return f"{size} kcmil"
+
+
+def cable_spec(cable_id: str) -> CableSpec:
+    key, sep, size = str(cable_id).partition(":")
+    series = _library()["series"].get(key) if sep else None
+    if series is None:
+        raise ValueError(f"Unknown cable_id {cable_id!r}; use '<series>:<size>', e.g. 'southwire_dlo_2000v:444.4'")
+    row = next((r for r in series["rows"] if r["id"] == size), None)
+    if row is None:
+        raise ValueError(f"cable_id {cable_id!r}: size {size!r} is not in series {key!r}")
+    meta = _library()["_meta"]["sources"][row["source"]]
+    area = float(row["area_cmil"])
+    if row.get("conductor_diameter_in"):
+        d_mm, d_src = float(row["conductor_diameter_in"]) * 25.4, "printed"
+    else:
+        d_mm, d_src = math.sqrt(area) / 1000 * DLO_DIAMETER_RATIO * 25.4, "proxy"
+    rdc = row.get("dc_resistance_ohm_per_kft")
+    basis = row.get("ampacity_basis") or meta.get("ampacity_basis", {}).get("free_air", "NOT STATED")
+    flags = tuple(row.get("flags", [])) + (() if d_src == "printed" else ("DIAMETER_PROXY",))
+    return CableSpec(
+        cable_id=f"{key}:{row['id']}", manufacturer=series["manufacturer"], series=series["series"],
+        size=row["size"], size_label=_library_size_label(row["size"]),
+        area_cmil=area, od_mm=float(row["nominal_od_mm"]), insulation_mm=float(row["insulation_mm"]),
+        diameter_mm=d_mm, diameter_source=d_src,
+        rdc_ref=None if rdc is None else (float(rdc["value"]), float(rdc["temp_c"])),
+        rated_voltage_v=float(series["voltage_v"]), temp_c=int(series["temp_c"]),
+        ampacity_free_air_a=float(row["ampacity_free_air_90c_30c_a"]),
+        ampacity_ref_ambient_c=float(row["ampacity_ref_ambient_c"]), ampacity_basis=basis,
+        basis_stated="NOT STATED" not in basis, standard_nec_size=bool(row["standard_nec_size"]),
+        listed_rhh=bool(row.get("listing_rhh_rhw")), status=row["status"],
+        source_name=meta["title"], source_url=meta["url"], source_date=meta["date"], flags=flags)
+
+
+def library_entries() -> list[dict]:
+    """Every library row as a dict (for the UI select and the calc package)."""
+    out = []
+    for key, series in _library()["series"].items():
+        for r in series["rows"]:
+            out.append(cable_spec(f"{key}:{r['id']}").as_dict())
+    return out
+
+
+def resolve_cable(inp: CableBusInput) -> CableSpec | None:
+    if inp.cable_type not in CABLE_TYPES:
+        raise ValueError(f"cable_type must be one of {', '.join(CABLE_TYPES)}")
+    if inp.cable_type != "dlo_2000v":
+        if inp.cable_id:
+            raise ValueError("cable_id is only used with cable_type 'dlo_2000v'")
+        return None
+    if not inp.cable_id:
+        raise ValueError("cable_type 'dlo_2000v' needs cable_id (see library_entries())")
+    return cable_spec(inp.cable_id)
+
+
+def _check_library(inp: CableBusInput, spec: CableSpec) -> None:
+    if inp.material != "Cu":
+        raise ValueError(f"{spec.cable_id} is tinned copper: set material 'Cu'")
+    if inp.voltage_v > spec.rated_voltage_v:
+        raise ValueError(f"{spec.cable_id} is rated {spec.rated_voltage_v:.0f} V; voltage_v {inp.voltage_v:.0f} is "
+                         "above the cable rating")
+    if inp.insulation_temp_c != spec.temp_c:
+        raise ValueError(f"{spec.cable_id} is rated {spec.temp_c} C: set insulation_temp_c to {spec.temp_c}")
+    if inp.insulation_mm is not None:
+        raise ValueError("insulation_mm is not used with a library cable (its insulation comes from the data file)")
+
+
+def _library_rdc_ohm_per_m(spec: CableSpec, temp_c: float) -> float:
+    if spec.rdc_ref is None:
+        return cond.rdc_from_area_ohm_per_m(spec.area_cmil, "Cu", temp_c, DLO_STRANDING_FACTOR)
+    r_ref, t_ref = spec.rdc_ref
+    return cond.rdc_datasheet_ohm_per_m(r_ref, t_ref, "Cu", temp_c)
+
+
+def _library_method(inp: CableBusInput, spec: CableSpec) -> str:
+    m = inp.ampacity_method
+    if m == "calculated":
+        raise ValueError("The calculated method is not available for library cables: use 'table' (standard NEC "
+                         "sizes listed RHH/RHW) or 'datasheet'")
+    if m not in ("auto", "table", "datasheet"):
+        raise ValueError("ampacity_method must be auto, table or datasheet for library cables")
+    table_ok = spec.standard_nec_size and spec.listed_rhh
+    if m == "auto":
+        return "table" if table_ok else "datasheet"
+    if m == "table" and not table_ok:
+        raise ValueError(f"{spec.size_label} has no code-table basis (non-standard NEC size or not listed "
+                         "RHH/RHW): use 'datasheet'")
+    return m
+
+
+def _library_ampacity(inp: CableBusInput, spec: CableSpec) -> tuple[float, str]:
+    if inp.cable_ampacity_a:   # user-supplied rating overrides the printed value
+        base, ref, src = inp.cable_ampacity_a, inp.cable_ampacity_ambient_c, "Supplied rating"
+    else:
+        base, ref, src = spec.ampacity_free_air_a, spec.ampacity_ref_ambient_c, f"{spec.manufacturer} printed rating"
+    f = amp.ambient_factor(inp.ambient_c, spec.temp_c, ref)
+    return base * f, (f"{src} {base:.0f} A at {ref:.0f} C ({spec.temp_c} C conductor, basis: {spec.ampacity_basis}) "
+                      f"x ambient factor {f:.3f} ({inp.ambient_c:.0f} C)")
+
+
+def _library_notes(inp: CableBusInput, spec: CableSpec, method: str) -> list[str]:
+    out = [f"Library cable {spec.cable_id}: {spec.manufacturer}, {spec.series}; {spec.size_label} "
+           f"{spec.area_cmil:,.0f} cmil; data status {spec.status} ({spec.source_name}; {spec.source_date}). "
+           f"Rated {spec.rated_voltage_v:.0f} V, {spec.temp_c} C."]
+    if spec.rdc_ref is None:
+        out.append(f"DC resistance: no printed value for this cable; calculated from {spec.area_cmil:,.0f} cmil, "
+                   f"annealed copper, stranding factor {DLO_STRANDING_FACTOR} (UNVERIFIED for Class I stranding; "
+                   "tinned-copper resistivity not applied).")
+    else:
+        out.append(f"DC resistance: printed {spec.rdc_ref[0]} ohm per 1000 ft at {spec.rdc_ref[1]:.0f} C, corrected "
+                   f"to {inp.insulation_temp_c} C.")
+    if spec.diameter_source == "proxy":
+        out.append(f"Conductor diameter not printed for this size: estimated {spec.diameter_mm:.2f} mm "
+                   "(sqrt(area) x 1.173, UNVERIFIED); used for GMR and skin effect only.")
+    if method == "table":
+        out.append(f"Ampacity basis: {inp.code} free-air table (90 C column), used because the size is a standard "
+                   "NEC size and the cable is listed RHH/RHW.")
+    else:
+        out.append(f"Ampacity basis: manufacturer free-air rating ({spec.ampacity_basis}), corrected from "
+                   f"{spec.ampacity_ref_ambient_c:.0f} C to {inp.ambient_c:.0f} C with the NEC 310.15(B)(1) "
+                   "ambient equation. Used because the size is non-standard or not listed RHH/RHW.")
+    if not spec.basis_stated:
+        out.append("WARNING: the maker does not state the ampacity basis for this row. The 30 C free-air basis is "
+                   "an assumption (UNVERIFIED); confirm with the manufacturer before using this rating.")
+    out.append("Termination: fine-stranded (Class I/K) conductors need lugs or connectors listed for that stranding "
+               "and this cable (NEC 110.14 / UL 486A-B, as attributed; UNVERIFIED here). Check the equipment "
+               "listing and the lug catalogue. The termination check applies to the table basis only.")
+    return out
 
 
 # --- layout -----------------------------------------------------------------
@@ -199,13 +387,18 @@ def _check_pattern(pattern: str, n_per_phase: int, tiers: int) -> list[str]:
     return rows
 
 
-def build_layout(inp: CableBusInput, pattern: str, od: float) -> list[Conductor]:
+def build_layout(inp: CableBusInput, pattern: str, od: float, spec: CableSpec | None = None) -> list[Conductor]:
     rows = _check_pattern(pattern, inp.conductors_per_phase, inp.tiers)
     pitch = inp.spacing_mm or 2 * od
     tier_pitch = inp.tier_spacing_mm or pitch
-    r_core = cond.rac_ohm_per_m(inp.size, inp.material, inp.insulation_temp_c, inp.frequency_hz,
-                                spacing_mm=pitch)
-    gmr = cond.gmr_mm(inp.size)
+    if spec is None:
+        r_core = cond.rac_ohm_per_m(inp.size, inp.material, inp.insulation_temp_c, inp.frequency_hz,
+                                    spacing_mm=pitch)
+        gmr = cond.gmr_mm(inp.size)
+    else:
+        r_core = cond.rac_from_rdc_ohm_per_m(_library_rdc_ohm_per_m(spec, inp.insulation_temp_c), spec.diameter_mm,
+                                             inp.frequency_hz, spacing_mm=pitch)
+        gmr = cond.gmr_from_diameter_mm(spec.diameter_mm)
     out = []
     for t, row in enumerate(rows):
         for i, ph in enumerate(row):
@@ -280,7 +473,9 @@ def construction(inp: CableBusInput) -> CableConstruction | None:
                              inp.jacket_mm, inp.jacket, inp.voltage_v, inp.insulation_temp_c)
 
 
-def resolve_method(inp: CableBusInput) -> str:
+def resolve_method(inp: CableBusInput, spec: CableSpec | None = None) -> str:
+    if spec is not None:
+        return _library_method(inp, spec)
     m = inp.ampacity_method
     if m == "auto":
         if inp.cable_ampacity_a:
@@ -293,8 +488,10 @@ def resolve_method(inp: CableBusInput) -> str:
     return m
 
 
-def per_cable_ampacity(inp: CableBusInput) -> tuple[float, str]:
-    if resolve_method(inp) == "datasheet":
+def per_cable_ampacity(inp: CableBusInput, spec: CableSpec | None = None) -> tuple[float, str]:
+    if resolve_method(inp, spec) == "datasheet":
+        if spec is not None:
+            return _library_ampacity(inp, spec)
         if not inp.cable_ampacity_a:
             raise ValueError("ampacity_method 'datasheet' needs cable_ampacity_a")
         f = amp.ambient_factor(inp.ambient_c, inp.insulation_temp_c, inp.cable_ampacity_ambient_c)
@@ -543,24 +740,31 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
         raise ValueError("shield_voltage_limit_v must be > 0")
     if inp.fault_clearing_s is not None:
         validate.clearing_time("fault_clearing_s", inp.fault_clearing_s)
-    size = cond.normalize_size(inp.size)
+    spec = resolve_cable(inp)
+    if spec is None:
+        size = cond.normalize_size(inp.size)
+    else:
+        _check_library(inp, spec)
+        size = spec.size
     inp.size = size
-    cons = construction(inp)
-    od = inp.cable_od_mm or (cons.de_mm if cons else None) or (cond.cable_od_mm(size) if inp.voltage_v <= 2000 else None)
+    cons = None if spec else construction(inp)
+    od = (inp.cable_od_mm or (spec.od_mm if spec else None) or (cons.de_mm if cons else None)
+          or (cond.cable_od_mm(size) if inp.voltage_v <= 2000 else None))
     if od is None:
         raise ValueError("Above 2000 V give cable_od_mm or the cable construction (insulation_mm, shield_mm, jacket_mm)")
     with_shields = inp.shield_bonding == "both_ends"
     if with_shields and cons and cons.shield_mm:
         inp.shield_mean_diameter_mm = inp.shield_mean_diameter_mm or cons.shield_mean_diameter_mm
         inp.shield_area_mm2 = inp.shield_area_mm2 or math.pi * cons.shield_mean_diameter_mm * cons.shield_mm
-    method = resolve_method(inp)
-    notes: list[str] = []
+    method = resolve_method(inp, spec)
+    notes: list[str] = _library_notes(inp, spec, method) if spec else []
+    size_text = spec.size_label if spec else cond.size_label(size)
 
     patterns = (candidate_patterns(inp.conductors_per_phase, inp.tiers) if inp.pattern == "auto"
                 else [inp.pattern.upper()])
     scored = []
     for p in patterns:
-        cs = build_layout(inp, p, od)
+        cs = build_layout(inp, p, od, spec)
         res = solve_sharing(cs, _groups(inp, with_shields), inp.frequency_hz)
         phase_idx = [i for i, c in enumerate(cs) if c.group in PHASES]
         scored.append((p, cs, res, max(res.share_pct(i) for i in phase_idx), sum(res.losses_w_per_m)))
@@ -593,7 +797,7 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
                      "315.60(B) under engineering supervision; model constants are UNVERIFIED pending check against "
                      "IEC 60287. Each cable's own shield loss factor (lambda1) from the sharing solve is included.")
     else:
-        a_cable, basis_fixed = per_cable_ampacity(inp)
+        a_cable, basis_fixed = per_cable_ampacity(inp, spec)
         if method == "table":
             a_term = amp.table_ampacity(inp.code, "free_air", inp.material, size, inp.terminal_temp_c)
 
@@ -656,7 +860,11 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
                        "unit": unit, "passed": bool(passed), "note": note})
 
     min_size = amp.PARALLEL_MIN[inp.code][inp.material]
-    if inp.conductors_per_phase > 1:
+    if inp.conductors_per_phase > 1 and spec is not None:
+        check("Minimum size for paralleled conductors", clauses["parallel"], spec.area_cmil,
+              cond.AREA_CMIL[min_size], "cmil", spec.area_cmil >= cond.AREA_CMIL[min_size],
+              f"min {cond.size_label(min_size)} (area comparison for {spec.size_label})")
+    elif inp.conductors_per_phase > 1:
         check("Minimum size for paralleled conductors", clauses["parallel"], cond.size_index(size),
               cond.size_index(min_size), "size index", cond.size_index(size) >= cond.size_index(min_size),
               f"min {cond.size_label(min_size)}")
@@ -686,12 +894,12 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
                      f"{inp.support_span_m:.3f} m span ~ {support:.0f} lbf (static; compare with tested block strength).")
         if inp.fault_clearing_s:
             # ICEA P-32-382 adiabatic withstand of all paralleled conductors of one phase (equal fault sharing).
-            area = cond.AREA_CMIL[size] * inp.conductors_per_phase
+            area = (spec.area_cmil if spec else cond.AREA_CMIL[size]) * inp.conductors_per_phase
             withstand_ka = cond.adiabatic_withstand_a(inp.material, area, inp.insulation_temp_c,
                                                       inp.insulation_sc_limit_c, inp.fault_clearing_s) / 1000
             check("Conductor short-circuit withstand", "ICEA P-32-382", withstand_ka, inp.fault_ka, "kA",
                   withstand_ka >= inp.fault_ka,
-                  f"{inp.conductors_per_phase} x {cond.size_label(size)} {inp.material} per phase, "
+                  f"{inp.conductors_per_phase} x {size_text} {inp.material} per phase, "
                   f"{inp.fault_clearing_s} s clearing, {inp.insulation_temp_c}->{inp.insulation_sc_limit_c} C, "
                   "equal fault sharing among paralleled conductors assumed")
         else:
@@ -758,4 +966,4 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
                           None if f_nm is None else round(f_nm, 1),
                           None if f_lbf is None else round(f_lbf, 1), None if support is None else round(support, 1),
                           checks, notes, round(od, 2), round(pitch, 2), round(inp.tier_spacing_mm or pitch, 2),
-                          sheath)
+                          sheath, None if spec is None else spec.as_dict())
