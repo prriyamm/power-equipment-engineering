@@ -48,6 +48,47 @@ class ForceResult:
         return self.worst_n_per_m * N_PER_M_TO_LBF_PER_FT
 
 
+def _geometry(conductors: list[Conductor], idx: list[int]) -> dict:
+    """Pair geometry: (2e-7 / d, ux, uy) for every ordered pair of phase conductors."""
+    pos = {i: (conductors[i].x_mm / 1000, conductors[i].y_mm / 1000) for i in idx}
+    geo = {}
+    for i in idx:
+        for j in idx:
+            if i != j:
+                dx, dy = pos[i][0] - pos[j][0], pos[i][1] - pos[j][1]
+                d = math.hypot(dx, dy)
+                geo[i, j] = (2e-7 / d, dx / d, dy / d)
+    return geo
+
+
+def _inst_currents(conductors: list[Conductor], share: dict[int, complex], idx: list[int],
+                   phases: tuple[str, ...], amp: float, w: float, t: float, decay: float, alpha: float,
+                   phi: float) -> dict[int, float]:
+    """Instantaneous conductor currents; conductor share applied via magnitude/angle."""
+    inst = {}
+    for i in idx:
+        k = phases.index(conductors[i].group)
+        s = share[i]
+        th = alpha - phi - 2 * math.pi * k / 3 + math.atan2(s.imag, s.real)
+        inst[i] = abs(s) * amp * (math.sin(w * t + th) - math.sin(th) * decay)
+    return inst
+
+
+def _forces_at(idx: list[int], geo: dict, inst: dict[int, float]) -> dict[int, tuple[float, float]]:
+    """Force per metre (fx, fy) on every conductor from the instantaneous currents."""
+    out = {}
+    for i in idx:
+        fx = fy = 0.0
+        for j in idx:
+            if i != j:
+                k_d, ux, uy = geo[i, j]
+                f = k_d * inst[i] * inst[j]   # attractive if same sign
+                fx -= f * ux
+                fy -= f * uy
+        out[i] = (fx, fy)
+    return out
+
+
 def fault_forces(conductors: list[Conductor], share: dict[int, complex], fault_ka_rms: float,
                  x_over_r: float, freq: float = 60.0, phases: tuple[str, ...] = ("A", "B", "C"),
                  cycles: float = 1.0, steps_per_cycle: int = 96, angle_steps: int = 24,
@@ -65,15 +106,7 @@ def fault_forces(conductors: list[Conductor], share: dict[int, complex], fault_k
     phi = math.atan(x_over_r)
     amp = math.sqrt(2) * fault_ka_rms * 1000
     idx = [i for i, c in enumerate(conductors) if c.group in phases]
-    pos = {i: (conductors[i].x_mm / 1000, conductors[i].y_mm / 1000) for i in idx}
-    # Pre-compute geometry: unit vectors and 2e-7/d.
-    geo = {}
-    for i in idx:
-        for j in idx:
-            if i != j:
-                dx, dy = pos[i][0] - pos[j][0], pos[i][1] - pos[j][1]
-                d = math.hypot(dx, dy)
-                geo[i, j] = (2e-7 / d, dx / d, dy / d)
+    geo = _geometry(conductors, idx)
 
     worst = [0.0] * len(conductors)
     body_names = sorted(set(bodies.values())) if bodies else []
@@ -86,23 +119,14 @@ def fault_forces(conductors: list[Conductor], share: dict[int, complex], fault_k
         for t_step in range(n_t):
             t = t_step / (steps_per_cycle * freq)
             decay = math.exp(-t / tau)
-            # Instantaneous phase currents; conductor share applied via magnitude/angle.
-            inst = {}
+            inst = _inst_currents(conductors, share, idx, phases, amp, w, t, decay, alpha, phi)
             for i in idx:
-                k = phases.index(conductors[i].group)
-                s = share[i]
-                th = alpha - phi - 2 * math.pi * k / 3 + math.atan2(s.imag, s.real)
-                inst[i] = abs(s) * amp * (math.sin(w * t + th) - math.sin(th) * decay)
-                i_peak = max(i_peak, abs(inst[i]) / abs(s) if abs(s) > 1e-12 else 0)
+                s_abs = abs(share[i])
+                i_peak = max(i_peak, abs(inst[i]) / s_abs if s_abs > 1e-12 else 0)
             acc = {b: [0.0, 0.0] for b in body_names}
+            fxy = _forces_at(idx, geo, inst)
             for i in idx:
-                fx = fy = 0.0
-                for j in idx:
-                    if i != j:
-                        k_d, ux, uy = geo[i, j]
-                        f = k_d * inst[i] * inst[j]   # attractive if same sign
-                        fx -= f * ux
-                        fy -= f * uy
+                fx, fy = fxy[i]
                 mag = math.hypot(fx, fy)
                 if mag > worst[i]:
                     worst[i] = mag

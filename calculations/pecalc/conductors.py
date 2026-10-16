@@ -139,6 +139,11 @@ def rac_ohm_per_m(size: str, material: str, temp_c: float = 75.0, freq: float = 
     return rdc * (1 + ys + yp)
 
 
+# ICEA P-32-382 adiabatic constants: (K with A in cmil and I in A, T0 in C).
+# [UNVERIFIED: K = 0.0297 Cu / 0.0125 Al with A in cmil, I in A; T0 = 234 Cu / 228 Al]
+ADIABATIC = {"Cu": (0.0297, 234.0), "Al": (0.0125, 228.0)}
+
+
 def adiabatic_withstand_a(material: str, area_cmil: float, initial_c: float, final_c: float,
                           time_s: float) -> float:
     """ICEA P-32-382 adiabatic short-circuit withstand current, A.
@@ -147,8 +152,18 @@ def adiabatic_withstand_a(material: str, area_cmil: float, initial_c: float, fin
     I = A sqrt(K log10((T2 + T0) / (T1 + T0)) / t), A in cmil, t in s.
     [UNVERIFIED: K = 0.0297 Cu / 0.0125 Al with A in cmil, I in A; T0 = 234 Cu / 228 Al]
     """
-    k, t0 = (0.0297, 234.0) if material == "Cu" else (0.0125, 228.0)
+    k, t0 = ADIABATIC["Cu"] if material == "Cu" else ADIABATIC["Al"]
     return area_cmil * math.sqrt(k * math.log10((final_c + t0) / (initial_c + t0)) / time_s)
+
+
+def adiabatic_temperature_c(material: str, area_cmil: float, initial_c: float, i2t_a2s: float) -> float:
+    """Conductor temperature after a fault with let-through energy i2t = integral of i^2 dt (A^2 s).
+
+    Inverse of adiabatic_withstand_a with the same constants: (I/A)^2 t -> i2t / A^2, so
+    T2 = (T1 + T0) 10^(i2t / (K A^2)) - T0.
+    """
+    k, t0 = ADIABATIC["Cu"] if material == "Cu" else ADIABATIC["Al"]
+    return (initial_c + t0) * 10 ** (i2t_a2s / (k * area_cmil ** 2)) - t0
 
 
 def gmr_mm(size: str) -> float:
