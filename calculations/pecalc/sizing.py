@@ -120,17 +120,11 @@ def small_conductor_limit_a(material: str, size: str) -> float | None:
 
 
 def _short_circuit_check(inp: FeederInput, size: str, sets: int) -> Check | None:
-    """ICEA P-32-382 adiabatic withstand: (I/A)^2 t = K log10((T2+T0)/(T1+T0)).
-
-    [UNVERIFIED: K = 0.0297 Cu / 0.0125 Al with A in cmil, I in A]
-    """
+    """ICEA P-32-382 adiabatic withstand (see conductors.adiabatic_withstand_a)."""
     if not (inp.fault_ka and inp.fault_clearing_s):
         return None
-    k, t0 = (0.0297, 234.0) if inp.material == "Cu" else (0.0125, 228.0)
-    area = cond.AREA_CMIL[size] * sets
-    withstand_a = area * math.sqrt(
-        k * math.log10((inp.insulation_sc_limit_c + t0) / (inp.insulation_temp_c + t0)) / inp.fault_clearing_s
-    )
+    withstand_a = cond.adiabatic_withstand_a(inp.material, cond.AREA_CMIL[size] * sets, inp.insulation_temp_c,
+                                             inp.insulation_sc_limit_c, inp.fault_clearing_s)
     return Check("Short-circuit withstand (all sets)", "ICEA P-32-382", round(withstand_a / 1000, 1),
                  inp.fault_ka, "kA", withstand_a / 1000 >= inp.fault_ka,
                  f"{inp.fault_clearing_s} s clearing, {inp.insulation_temp_c}->{inp.insulation_sc_limit_c} C")
