@@ -176,6 +176,21 @@ def solve_sharing(conductors: list[Conductor], groups: dict[str, Group],
     return SharingResult(currents, drops, losses, conductors, groups)
 
 
+def open_circuit_voltages(sources: list[Conductor], currents: list[complex], probes: list[Conductor],
+                          freq: float = 60.0, soil_ohm_m: float = 100.0) -> list[complex]:
+    """Longitudinal voltage per metre induced on open-circuited probe conductors (V/m).
+
+    A probe that carries no current (e.g. a shield bonded at one point only)
+    sees E_p = sum_k z_pk I_k, where z_pk is the same Carson mutual impedance
+    impedance_matrix() uses for the sharing solve (concentric core/shield pairs
+    use the shield's mean radius). The sign convention is the series drop;
+    the induced EMF is -E_p, so magnitudes are identical.
+    """
+    z = impedance_matrix(list(sources) + list(probes), freq, soil_ohm_m)
+    n = len(sources)
+    return [sum((z[n + p][k] * currents[k] for k in range(n)), 0j) for p in range(len(probes))]
+
+
 def balanced_three_phase(i_rms: float, pf: float = 1.0, lagging: bool = True,
                          names: tuple[str, str, str] = ("A", "B", "C")) -> dict[str, Group]:
     validate.power_factor("power_factor", pf)
