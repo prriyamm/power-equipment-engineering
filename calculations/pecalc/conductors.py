@@ -104,11 +104,25 @@ def cable_od_mm(size: str) -> float:
     return diameter_mm(size) + 2 * insulation_mm(size)
 
 
-def rdc_ohm_per_m(size: str, material: str, temp_c: float = 75.0) -> float:
+def rdc_from_area_ohm_per_m(area_cmil: float, material: str, temp_c: float = 75.0,
+                           stranding_factor: float = STRANDING_FACTOR) -> float:
+    """DC resistance from the conductor area alone (any area, e.g. non-standard DLO sizes)."""
     m = MATERIALS[material]
-    r20_per_ft = m["rho20"] / AREA_CMIL[normalize_size(size)] * STRANDING_FACTOR
+    r20_per_ft = m["rho20"] / area_cmil * stranding_factor
     r_per_ft = r20_per_ft * (m["t0"] + temp_c) / (m["t0"] + 20.0)
     return r_per_ft / FT
+
+
+def rdc_ohm_per_m(size: str, material: str, temp_c: float = 75.0) -> float:
+    return rdc_from_area_ohm_per_m(AREA_CMIL[normalize_size(size)], material, temp_c)
+
+
+def rdc_datasheet_ohm_per_m(r_ref_ohm_per_kft: float, temp_ref_c: float, material: str, temp_c: float) -> float:
+    """Correct a datasheet DC resistance (ohm per 1000 ft at temp_ref_c) to temp_c with the same
+    resistivity temperature model: R2 = R1 (t0 + T2) / (t0 + T1)."""
+    m = MATERIALS[material]
+    r_ref_per_m = r_ref_ohm_per_kft / 1000 / FT
+    return r_ref_per_m * (m["t0"] + temp_c) / (m["t0"] + temp_ref_c)
 
 
 def _f(x4: float) -> float:
@@ -136,6 +150,13 @@ def rac_ohm_per_m(size: str, material: str, temp_c: float = 75.0, freq: float = 
                   spacing_mm: float | None = None) -> float:
     rdc = rdc_ohm_per_m(size, material, temp_c)
     ys, yp = ac_factors(rdc, freq, diameter_mm(size), spacing_mm)
+    return rdc * (1 + ys + yp)
+
+
+def rac_from_rdc_ohm_per_m(rdc: float, diameter_mm_: float, freq: float = 60.0,
+                           spacing_mm: float | None = None) -> float:
+    """AC resistance from a given DC resistance (same skin/proximity model as rac_ohm_per_m)."""
+    ys, yp = ac_factors(rdc, freq, diameter_mm_, spacing_mm)
     return rdc * (1 + ys + yp)
 
 
@@ -168,7 +189,11 @@ def adiabatic_temperature_c(material: str, area_cmil: float, initial_c: float, i
 
 def gmr_mm(size: str) -> float:
     """Geometric mean radius, approximated as 0.7788 r (solid-round value)."""
-    return 0.7788 * diameter_mm(size) / 2
+    return gmr_from_diameter_mm(diameter_mm(size))
+
+
+def gmr_from_diameter_mm(diameter_mm_: float) -> float:
+    return 0.7788 * diameter_mm_ / 2
 
 
 def reactance_ohm_per_m(size: str, gmd_mm: float, freq: float = 60.0) -> float:
