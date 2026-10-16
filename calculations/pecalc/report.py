@@ -91,6 +91,16 @@ def _sections(module: str, r, inp=None) -> list[tuple[str, str]]:
         s.append(("Conductor currents", _table(
             [[c.phase, c.tier, c.x_mm, c.current_a, c.share_pct, c.ampacity_a, c.loading_pct] for c in r.conductors],
             ["Phase", "Tier", "x (mm)", "Current (A)", "% of equal share", "Ampacity (A)", "Loading %"])))
+        sh = getattr(r, "sheath", None)
+        if sh:
+            modes = [(m, sh["modes"][m]) for m in ("single_point", "both_ends") if sh["modes"][m]]
+            s.append(("Shield bonding comparison", _table(
+                [[m.replace("_", " "), d["shield_current_a"], d["shield_loss_w"], d["max_lambda1"], d["min_ampacity_a"],
+                  d["max_loading_pct"], "" if d["standing_v"] is None else d["standing_v"],
+                  "" if d["standing_v_fault"] is None else d["standing_v_fault"]] for m, d in modes],
+                ["Bonding", "Shield current (A)", "Shield loss (W)", "Max lambda1", "Lowest ampacity (A)",
+                 "Worst loading %", "Standing V (normal)", "Standing V (fault)"])
+                + f"<p>{_esc(sh['recommendation'])}</p>"))
         if len(r.patterns_compared) > 1:
             s.append(("Phase patterns compared", _table(
                 [[p.pattern, p.max_share_pct, p.loss_w_per_m] for p in r.patterns_compared],

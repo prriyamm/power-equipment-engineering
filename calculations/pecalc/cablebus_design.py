@@ -188,7 +188,7 @@ def design_options(req: DesignRequest) -> DesignResult:
                 inp = replace(base, conductors_per_phase=n, tiers=tiers, cable_od_mm=od,
                               enclosure_width_mm=fit[0] * INCH,
                               enclosure_height_mm=fit[1] * INCH)
-                r = analyse(inp)
+                r = analyse(inp, compare_bonding=False)
                 failed = [c["name"] for c in r.checks if not c["passed"]]
                 if r.max_loading_pct > req.max_loading_pct:
                     failed.append(f"Loading above {req.max_loading_pct:g} %")
@@ -223,7 +223,7 @@ def design_options(req: DesignRequest) -> DesignResult:
         allow = mat["tensile"] / req.block_safety_factor if mat else None
         for c in ranked:
             inp = CableBusInput(**{**c.case_inputs, "fault_ka": req.fault_ka})
-            r = analyse(inp)
+            r = analyse(inp, compare_bonding=False)
             load = r.fault_force_n_per_m * req.support_span_m          # N on one block at the worst cable
             ligament = min(r.pitch_mm - r.cable_od_mm, r.cable_od_mm)
             stress = load / (req.block_thickness_mm * ligament)          # N/mm2 = MPa

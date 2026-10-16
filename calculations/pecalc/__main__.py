@@ -78,7 +78,8 @@ def cablebus(a: argparse.Namespace) -> int:
                         insulation=a.insulation, insulation_mm=a.insulation_mm, shield_mm=a.shield_mm,
                         jacket_mm=a.jacket_mm, jacket=a.jacket,
                         shield_bonding=a.shield_bonding, shield_area_mm2=a.shield_area,
-                        shield_mean_diameter_mm=a.shield_diameter, fault_ka=a.fault_ka,
+                        shield_mean_diameter_mm=a.shield_diameter, shield_section_length_m=a.shield_section,
+                        shield_voltage_limit_v=a.shield_voltage_limit, fault_ka=a.fault_ka,
                         fault_clearing_s=a.fault_time, x_over_r=a.xr, support_span_m=a.support_span, max_vd_pct=a.max_vd,
                         enclosure_width_mm=a.enclosure_width, enclosure_height_mm=a.enclosure_height,
                         side_thickness_mm=a.side_mm, cover_thickness_mm=a.cover_mm,
@@ -96,6 +97,12 @@ def cablebus(a: argparse.Namespace) -> int:
     print(f"  Worst conductor loading {r.max_loading_pct} %, voltage drop {r.vd_pct} %, "
           f"conductor loss {r.conductor_loss_w/1000:.2f} kW, shield loss {r.shield_loss_w/1000:.2f} kW, "
           f"enclosure loss {r.enclosure_loss_w/1000:.2f} kW")
+    if r.sheath and r.sheath["standing_v"] is not None:
+        sh = r.sheath
+        fault = f", {sh['standing_v_fault']} V at {sh['fault_ka']:g} kA" if sh["standing_v_fault"] is not None else ""
+        print(f"  Shield standing voltage (single-point): {sh['standing_v']} V on {sh['worst_shield']} "
+              f"({sh['e_v_per_km']} V/km x {sh['section_length_m']:g} m){fault}")
+        print(f"  Bonding: {sh['recommendation']}")
     for c in r.checks:
         print(_row(c))
     print("\nConductor currents (A, % of equal share):")
@@ -300,6 +307,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--shield-bonding", choices=["none", "single_point", "both_ends"], default="none")
     c.add_argument("--shield-area", type=float, help="shield copper area per cable, mm2")
     c.add_argument("--shield-diameter", type=float, help="shield mean diameter, mm")
+    c.add_argument("--shield-section", type=float,
+                   help="single-point bonded section length, m (default: whole run)")
+    c.add_argument("--shield-voltage-limit", type=float,
+                   help="owner/utility limit for the open-end shield standing voltage, V (no default)")
     c.add_argument("--xr", type=float, default=15.0, help="X/R ratio at the fault point")
     c.add_argument("--support-span", type=float, default=0.9144, help="support/block spacing, m")
     c.add_argument("--enclosure-width", type=float, help="enclosure inside width, mm (enables housing model)")

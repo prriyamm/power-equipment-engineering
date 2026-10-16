@@ -19,14 +19,14 @@ import cmath
 import itertools
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 from . import ampacity as amp
 from . import conductors as cond
 from . import validate
 from .field import LIMITS_UT, b_rms_ut
 from .forces import N_PER_M_TO_LBF_PER_FT, fault_forces
-from .impedance import Conductor, Group, balanced_three_phase, solve_sharing
+from .impedance import Conductor, Group, balanced_three_phase, open_circuit_voltages, solve_sharing
 from .thermal import CableConstruction, free_air_ampacity
 
 PHASES = ("A", "B", "C")
@@ -76,6 +76,12 @@ class CableBusInput:
     shield_area_mm2: float | None = None   # copper tape/wire cross-section per cable
     shield_mean_diameter_mm: float | None = None
     shield_temp_c: float = 80.0
+    # Single-point bonding: length of one bonded (minor) section; the shield is grounded at one end of
+    # each section and the standing voltage builds up to the open end. None = the whole run.
+    shield_section_length_m: float | None = None
+    # Owner / utility limit for the open-end standing voltage at normal load. No verified public value
+    # exists (IEEE 575 practice ~25 V is a LOW-confidence secondary figure), so there is no default.
+    shield_voltage_limit_v: float | None = None
     # Short circuit
     fault_ka: float | None = None
     fault_clearing_s: float | None = None  # optional; enables the conductor short-circuit withstand check
@@ -143,6 +149,7 @@ class CableBusResult:
     cable_od_mm: float = 0.0
     pitch_mm: float = 0.0
     tier_pitch_mm: float = 0.0
+    sheath: dict | None = None   # shield standing voltage and bonding comparison (shielded cable only)
 
     @property
     def passed(self) -> bool:
@@ -384,10 +391,156 @@ def phase_voltage_drops(res, voltage_v: float, power_factor: float, length_m: fl
     return out
 
 
+
+# --- shield standing voltage and bonding comparison --------------------------
+
+SHEATH_LIMIT_NOTE = ("No verified public limit is loaded: a secondary source attributes ~25 V at normal load to "
+                     "IEEE 575 practice (LOW confidence, clause not found), so it is not used as a default. Set the "
+                     "utility / owner limit (shield_voltage_limit_v) to get a pass/fail.")
+_SP_KEYS = ("e_v_per_km", "standing_v", "standing_v_fault", "worst_shield", "max_section_m_for_limit", "passed",
+            "shields")
+
+
+def shield_standing_voltages(cs: list[Conductor], currents: list[complex], shield_radius_mm: float,
+                             freq: float) -> list[tuple[int, complex]]:
+    """Induced voltage per metre on each open (single-point bonded) phase-cable shield.
+
+    One current-free probe per phase conductor, concentric with it at the shield mean
+    radius. E_i = sum_k z(shield_i, k) I_k over every current-carrying conductor (cores
+    and, if modelled, enclosure filaments), using the impedance module's Carson mutual
+    impedances (impedance.open_circuit_voltages). Returns [(core index, E in V/m)].
+    """
+    cores = [i for i, c in enumerate(cs) if c.group in PHASES]
+    probes = [Conductor(cs[i].x_mm, cs[i].y_mm, "SHIELD", 0.0, shield_radius_mm, f"S-{cs[i].label}",
+                        tube_radius_mm=shield_radius_mm) for i in cores]
+    return list(zip(cores, open_circuit_voltages(cs, currents, probes, freq)))
+
+
+def _shield_radius_mm(inp: CableBusInput, cons) -> float | None:
+    d = inp.shield_mean_diameter_mm or (cons.shield_mean_diameter_mm if cons is not None and cons.shield_mm else None)
+    return d / 2 if d else None
+
+
+def _standing(inp: CableBusInput, cs, res, radius: float, section_m: float) -> dict:
+    """Open-end standing voltage over one bonded section: normal load and balanced through-fault."""
+    k_fault = inp.fault_ka * 1000 / inp.current_a if inp.fault_ka else None
+    shields, mags = [], []
+    for i, e in shield_standing_voltages(cs, res.currents, radius, inp.frequency_hz):
+        v = abs(e) * section_m
+        mags.append(abs(e))
+        shields.append({"label": f"S-{cs[i].label}", "phase": cs[i].group, "x_mm": round(cs[i].x_mm, 1),
+                        "y_mm": round(cs[i].y_mm, 1), "e_v_per_km": round(abs(e) * 1000, 3),
+                        "standing_v": round(v, 2),
+                        "standing_v_fault": None if k_fault is None else round(v * k_fault, 2)})
+    e_max = max(mags)
+    # First shield within 1e-9 of the maximum, so mirror-image ties resolve the same way in every port.
+    worst = next(s for s, m in zip(shields, mags) if m >= e_max * (1 - 1e-9))
+    v_max = e_max * section_m
+    lim = inp.shield_voltage_limit_v
+    return {"e_v_per_km": round(e_max * 1000, 3), "standing_v": round(v_max, 2),
+            "standing_v_fault": None if k_fault is None else round(v_max * k_fault, 2),
+            "worst_shield": worst["label"],
+            "max_section_m_for_limit": None if lim is None else round(lim / e_max, 1),
+            "passed": None if lim is None else bool(v_max <= lim), "shields": shields}
+
+
+def _mode_summary(rows: list[ConductorRow], shield_i: float, shield_loss: float, lam_max: float,
+                  sp: dict | None) -> dict:
+    return {"shield_current_a": round(shield_i, 1), "shield_loss_w": round(shield_loss, 1),
+            "max_lambda1": round(lam_max, 4), "min_ampacity_a": min(r.ampacity_a for r in rows),
+            "max_loading_pct": max(r.loading_pct for r in rows),
+            "standing_v": sp["standing_v"] if sp else None,
+            "standing_v_fault": sp["standing_v_fault"] if sp else None}
+
+
+def _recommendation(sh: dict, inp: CableBusInput) -> str:
+    sp, be = sh["modes"]["single_point"], sh["modes"]["both_ends"]
+    if sh["standing_v"] is None:
+        return ("Single-point standing voltage not computed (give the shield mean diameter or the cable "
+                "construction with a shield thickness). Cross-bonding is not modelled.")
+    txt = (f"Single-point bonding: {sh['standing_v']:.1f} V at the open end of a {sh['section_length_m']:g} m "
+           "bonded section at normal load")
+    if sh["standing_v_fault"] is not None:
+        txt += f" ({sh['standing_v_fault']:.0f} V during a {inp.fault_ka:g} kA balanced through-fault)"
+    txt += ", no circulating loss."
+    if be:
+        txt += (f" Both-ends bonding: {be['shield_current_a']:.0f} A circulating, "
+                f"{be['shield_loss_w'] / 1000:.2f} kW shield loss, worst lambda1 {be['max_lambda1']:.3f}, "
+                f"lowest cable ampacity {sp['min_ampacity_a']:.0f} -> {be['min_ampacity_a']:.0f} A, "
+                f"worst loading {sp['max_loading_pct']:.1f} -> {be['max_loading_pct']:.1f} %.")
+    lim = sh["voltage_limit_v"]
+    if lim is None:
+        txt += " Set your utility / owner standing-voltage limit to get a pass/fail and a recommendation."
+    elif sh["passed"]:
+        txt += (f" Within the {lim:g} V limit, so single-point bonding is favoured (no circulating loss or ampacity "
+                "derating); confirm the jacket and sheath voltage limiter (SVL) ratings against the fault voltage.")
+    else:
+        txt += (f" Exceeds the {lim:g} V limit: shorten the bonded section to <= {sh['max_section_m_for_limit']:g} m "
+                "(minor sections or mid-point bonding), or accept both-ends bonding with its loss and derating, "
+                "or use cross-bonding.")
+    return txt + " Cross-bonding is not modelled."
+
+
+def sheath_study(inp: CableBusInput, cons, cs, res, pattern: str, rows: list[ConductorRow], shield_i: float,
+                 shield_loss: float, lam_max: float, compare_bonding: bool) -> dict:
+    """Shield standing voltage (single-point bonding) and comparison with both-ends bonding.
+
+    Standing voltage: each shield open at one end of a bonded section,
+    E_i = |sum_k z(shield_i, k) I_k| (V/m) with the impedance module's mutual impedances,
+    V = E x section length. Through-fault: currents scaled by fault_ka / current_a
+    (balanced three-phase fault shared like load current). With compare_bonding the other
+    bonding mode is solved for the same phase pattern.
+    """
+    section = inp.shield_section_length_m or inp.length_m
+    mode = inp.shield_bonding
+    other = "both_ends" if mode == "single_point" else "single_point"
+    notes: list[str] = []
+    alt = None
+    if compare_bonding:
+        try:
+            alt = analyse(replace(inp, shield_bonding=other, pattern=pattern), compare_bonding=False)
+        except ValueError as e:
+            notes.append(f"{other.replace('_', '-')} bonding not compared: {e}")
+    sp = None
+    if mode == "single_point":
+        radius = _shield_radius_mm(inp, cons)
+        if radius:
+            sp = _standing(inp, cs, res, radius, section)
+        else:
+            notes.append("Standing voltage needs the shield mean diameter (shield_mean_diameter_mm) or the cable "
+                         "construction with a shield thickness.")
+    elif alt is not None and alt.sheath["standing_v"] is not None:
+        sp = {k: alt.sheath[k] for k in _SP_KEYS}
+    modes = {"single_point": None, "both_ends": None}
+    modes[mode] = _mode_summary(rows, shield_i, shield_loss, lam_max, sp if mode == "single_point" else None)
+    if alt is not None:
+        modes[other] = alt.sheath["modes"][other]
+    lim = inp.shield_voltage_limit_v
+    sh = {"bonding": mode, "section_length_m": section, "sections": math.ceil(inp.length_m / section - 1e-9),
+          "voltage_limit_v": lim, "fault_ka": inp.fault_ka}
+    sh.update({k: (sp[k] if sp else ([] if k == "shields" else None)) for k in _SP_KEYS})
+    sh["modes"] = modes
+    if lim is None:
+        notes.append(SHEATH_LIMIT_NOTE)
+    notes.append("Through-fault voltage assumes a balanced three-phase fault shared like load current; a "
+                 "single-line-to-ground fault (earth / shield return) can give much higher shield voltages and is "
+                 "not modelled. Compare the fault value with the jacket and sheath voltage limiter (SVL) ratings.")
+    notes.append("Cross-bonding (three equal minor sections with transpositions) is not modelled.")
+    sh["recommendation"] = _recommendation(sh, inp)
+    sh["notes"] = notes
+    return sh
+
+
 # --- main -------------------------------------------------------------------
 
-def analyse(inp: CableBusInput) -> CableBusResult:
+def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
+    """Check a cable bus. With shielded cable, compare_bonding also solves the other bonding mode
+    (single-point vs both-ends) for the sheath comparison; the designer turns it off for speed."""
     validate.voltage("voltage_v", inp.voltage_v)
+    if inp.shield_section_length_m is not None and not 0 < inp.shield_section_length_m <= inp.length_m:
+        raise ValueError("shield_section_length_m must be > 0 and no longer than length_m")
+    if inp.shield_voltage_limit_v is not None and not inp.shield_voltage_limit_v > 0:
+        raise ValueError("shield_voltage_limit_v must be > 0")
     if inp.fault_clearing_s is not None:
         validate.clearing_time("fault_clearing_s", inp.fault_clearing_s)
     size = cond.normalize_size(inp.size)
@@ -585,6 +738,18 @@ def analyse(inp: CableBusInput) -> CableBusResult:
                      f"occupational {LIMITS_UT['ICNIRP 1998 occupational']} uT"
                      f"{' - EXCEEDS public level' if worst_b > LIMITS_UT['ICNIRP 1998 public'] else ''}.")
 
+    sheath = None
+    if inp.shield_bonding in ("single_point", "both_ends"):
+        lam_max = max(shield_lambda1(r.index) for r in rows)
+        sheath = sheath_study(inp, cons, cs, res, pattern, rows, shield_i, shield_loss, lam_max, compare_bonding)
+        if (inp.shield_bonding == "single_point" and inp.shield_voltage_limit_v is not None
+                and sheath["standing_v"] is not None):
+            check("Shield standing voltage at open end (single-point bonding, normal load)",
+                  "Owner / utility limit (IEEE 575 practice) [user-set limit, UNVERIFIED]",
+                  sheath["standing_v"], inp.shield_voltage_limit_v, "V", sheath["passed"],
+                  f"{sheath['worst_shield']}: {sheath['e_v_per_km']:.1f} V/km x {sheath['section_length_m']:g} m "
+                  "bonded section")
+
     width = max(r.x_mm for r in rows) + od
     height = max(r.y_mm for r in rows) + od
     return CableBusResult(inp, pattern, compared, round(width, 1), round(height, 1), rows, basis,
@@ -592,4 +757,5 @@ def analyse(inp: CableBusInput) -> CableBusResult:
                           round(shield_i, 1), round(encl_loss, 1), round(encl_i, 1), field_ut,
                           None if f_nm is None else round(f_nm, 1),
                           None if f_lbf is None else round(f_lbf, 1), None if support is None else round(support, 1),
-                          checks, notes, round(od, 2), round(pitch, 2), round(inp.tier_spacing_mm or pitch, 2))
+                          checks, notes, round(od, 2), round(pitch, 2), round(inp.tier_spacing_mm or pitch, 2),
+                          sheath)
