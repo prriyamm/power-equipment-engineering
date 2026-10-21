@@ -179,5 +179,14 @@ class PrintedResistance(unittest.TestCase):
         self.assertNotAlmostEqual(cb._library_rdc_ohm_per_m(spec, 90.0), 1.25497e-4, delta=1e-6)
 
 
+class Drawing(unittest.TestCase):
+    def test_title_labels_library_size_with_unit(self):
+        from pecalc.drawing import cablebus_svg
+        inp = cb.CableBusInput(voltage_v=600, current_a=1000, conductors_per_phase=2, size="444.4",
+                               cable_type="dlo_2000v", cable_id="southwire_dlo_2000v:444.4",
+                               enclosure_width_mm=400, enclosure_height_mm=150)
+        self.assertIn(">2 x 444.4 kcmil Cu per phase, ", cablebus_svg(inp, cb.analyse(inp)))
+
+
 if __name__ == "__main__":
     unittest.main()
