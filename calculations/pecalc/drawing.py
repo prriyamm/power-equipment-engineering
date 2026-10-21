@@ -95,7 +95,9 @@ def cablebus_svg(inp, result, block_material: str = "GPO-3", block_lip_mm: float
             s.append(f"<rect x='{lx}' y='{ly - 10}' width='14' height='11' fill='{col}' stroke='#777'/>")
         s.append(f"<text x='{lx + 20}' y='{ly}'>{escape(text)}</text>")
         lx += 30 + 7 * len(text)
-    title = (f"{inp.conductors_per_phase} x {result.input.size} {inp.material} per phase, "
+    # A library cable carries its own size label (e.g. "444.4 kcmil"); building-wire sizes keep the bare size.
+    size = result.cable_data["size_label"] if result.cable_data else result.input.size
+    title = (f"{inp.conductors_per_phase} x {size} {inp.material} per phase, "
              f"{inp.tiers} tier(s), pattern {result.pattern}, cable OD {od:.1f} mm")
     s.append(f"<text x='{pad_l}' y='22' font-size='14' font-weight='bold'>{escape(title)}</text>")
     s.append("<defs><marker id='a' viewBox='0 0 10 10' refX='5' refY='5' markerWidth='6' markerHeight='6' "
