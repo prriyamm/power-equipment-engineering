@@ -18,7 +18,9 @@ import math
 from dataclasses import asdict, dataclass, field, replace
 
 from . import conductors as cond
-from .cablebus import CableBusInput, analyse, construction, per_cable_ampacity, resolve_method
+from . import validate
+from .cablebus import (CableBusInput, analyse, construction, default_terminal_temp_c, per_cable_ampacity,
+                       require_ambient_below, resolve_method, termination_ampacity)
 from .thermal import free_air_ampacity
 
 # Typical support-block laminate properties (MPa). [UNVERIFIED: typical NEMA LI 1 / supplier
@@ -47,7 +49,7 @@ class DesignRequest:
     tier_options: tuple[int, ...] = (1, 2, 3, 4)
     ampacity_method: str = "auto"
     insulation_temp_c: int = 90
-    terminal_temp_c: int = 90
+    terminal_temp_c: int | None = None             # None: 75 C up to 2000 V, 90 C above (see CableBusInput)
     # MV cable construction (needed above 2000 V; same for every size of a voltage class)
     insulation: str = "XLPE"
     insulation_mm: float | None = None
@@ -66,6 +68,8 @@ class DesignRequest:
     covers_continuous: bool = False
     # Short circuit and support blocks
     fault_ka: float | None = None
+    fault_clearing_s: float | None = None          # enables the conductor short-circuit withstand check
+    shield_voltage_limit_v: float | None = None    # owner / utility limit on the single-point standing voltage
     x_over_r: float = 15.0
     support_span_m: float = 0.9144
     block_material: str = "GPO-3"
@@ -127,7 +131,8 @@ def _base_input(req: DesignRequest, size: str) -> CableBusInput:
         insulation_temp_c=req.insulation_temp_c, terminal_temp_c=req.terminal_temp_c, ambient_c=req.ambient_c,
         ampacity_method=req.ampacity_method, insulation=req.insulation, insulation_mm=req.insulation_mm,
         shield_mm=req.shield_mm, jacket_mm=req.jacket_mm, jacket=req.jacket, shield_bonding=bonding,
-        max_vd_pct=req.max_vd_pct, enclosure_alloy=req.enclosure_alloy, side_thickness_mm=req.side_thickness_mm,
+        max_vd_pct=req.max_vd_pct, fault_clearing_s=req.fault_clearing_s,
+        shield_voltage_limit_v=req.shield_voltage_limit_v, enclosure_alloy=req.enclosure_alloy, side_thickness_mm=req.side_thickness_mm,
         covers_continuous=req.covers_continuous, x_over_r=req.x_over_r, support_span_m=req.support_span_m,
         allow_placeholder_data=req.allow_placeholder_data, field_distances_m=(1.0,))
 
@@ -147,6 +152,7 @@ def _estimate_ampacity(base: CableBusInput, od: float) -> float:
         cons = construction(base)
         if cons is None:
             raise ValueError("Calculated ampacity needs the cable construction")
+        require_ambient_below(base.ambient_c, base.insulation_temp_c)
         return free_air_ampacity(cons, base.ambient_c, "isolated", 0.0, base.frequency_hz, 2 * od).ampacity_a
     return per_cable_ampacity(base)[0]
 
@@ -163,15 +169,41 @@ def _fit_enclosure(req: DesignRequest, per_tier: int, tiers: int, od: float) -> 
     return best
 
 
+def _validate_request(req: DesignRequest) -> None:
+    validate.voltage("voltage_v", req.voltage_v)
+    validate.positive("current_a", req.current_a, "A")
+    validate.positive("length_m", req.length_m, "m")
+    validate.positive("frequency_hz", req.frequency_hz, "Hz")
+    validate.count_at_least("max_per_phase", req.max_per_phase)
+    if not req.tier_options:
+        raise ValueError("tier_options must list at least one tier count")
+    for t in req.tier_options:
+        validate.count_at_least("tiers (tier_options)", t)
+    if req.fault_ka is not None:
+        validate.non_negative("fault_ka", req.fault_ka, "kA")
+    if req.fault_clearing_s is not None:
+        validate.clearing_time("fault_clearing_s", req.fault_clearing_s)
+    if req.shield_voltage_limit_v is not None:
+        validate.positive("shield_voltage_limit_v", req.shield_voltage_limit_v, "V")
+
+
 def design_options(req: DesignRequest) -> DesignResult:
+    _validate_request(req)
     sizes = [cond.normalize_size(s) for s in (req.sizes or ("500", "600", "750", "1000"))]
     notes: list[str] = []
+    if 600 < req.voltage_v <= 2000 and not req.insulation_mm:
+        notes.append("Cable OD is estimated from a 600 V insulation wall, but voltage_v is "
+                     f"{req.voltage_v:g} V: give insulation_mm (cable construction) for the real cable.")
     candidates = []
     considered = 0
     for size in sizes:
         base = _base_input(req, size)
         od = _cable_od(req, base)
         a_est = _estimate_ampacity(base, od)
+        # Termination limit (NEC 110.14(C), Table 310.16) also caps the load per conductor.
+        a_term = termination_ampacity(base, size, base.terminal_temp_c or default_terminal_temp_c(base.voltage_v)[0])[0]
+        if a_term is not None:
+            a_est = min(a_est, a_term)
         n_min = max(1, math.ceil(req.current_a / a_est))
         if n_min > req.max_per_phase:
             notes.append(f"{cond.size_label(size)}: needs {n_min} per phase (> {req.max_per_phase}); skipped.")
@@ -199,47 +231,74 @@ def design_options(req: DesignRequest) -> DesignResult:
                     round(r.enclosure_loss_w / 1000, 2), round(cond.area_mm2(size) * n, 0), not failed, failed,
                     case_inputs={k: v for k, v in asdict(inp).items()}))
 
-    passing = [c for c in candidates if c.passed]
-    failing = [c for c in candidates if not c.passed]
-    passing.sort(key=lambda c: (c.copper_mm2_per_phase, c.inside_w_mm * c.inside_h_mm, c.max_loading_pct))
-    failing.sort(key=lambda c: c.max_loading_pct)
-    ranked = passing[: req.top_n] + (failing[: max(0, req.top_n - len(passing))] if len(passing) < 3 else [])
-    for i, c in enumerate(ranked, 1):
-        c.rank = i
+    block_mat = BLOCK_MATERIALS.get(req.block_material)
+    block_allow = block_mat["tensile"] / req.block_safety_factor if block_mat else None
+    block_done: set[int] = set()
 
-    if passing:
-        least_cu = min(passing, key=lambda c: (c.copper_mm2_per_phase, c.inside_w_mm * c.inside_h_mm))
-        smallest = min(passing, key=lambda c: (c.inside_w_mm * c.inside_h_mm, c.copper_mm2_per_phase))
-        margin = min(passing, key=lambda c: (c.max_loading_pct, c.copper_mm2_per_phase))
-        for c, tag in ((least_cu, "least copper"), (smallest, "smallest enclosure"), (margin, "most margin")):
-            c.tags.append(tag)
-            if c not in ranked:
-                ranked.append(c)
-        for i, c in enumerate(ranked, 1):
-            c.rank = i
-
-    if req.fault_ka:
-        mat = BLOCK_MATERIALS.get(req.block_material)
-        allow = mat["tensile"] / req.block_safety_factor if mat else None
-        for c in ranked:
+    def block_ok(c: DesignOption) -> bool:
+        """Support-block check at fault_ka (once per option); updates c.passed / c.failed_checks."""
+        if not req.fault_ka:
+            return c.passed
+        if id(c) not in block_done:
+            block_done.add(id(c))
             inp = CableBusInput(**{**c.case_inputs, "fault_ka": req.fault_ka})
             r = analyse(inp, compare_bonding=False)
             load = r.fault_force_n_per_m * req.support_span_m          # N on one block at the worst cable
             ligament = min(r.pitch_mm - r.cable_od_mm, r.cable_od_mm)
             stress = load / (req.block_thickness_mm * ligament)          # N/mm2 = MPa
             c.block_load_n, c.block_stress_mpa = round(load), round(stress, 1)
-            c.block_allowable_mpa = None if allow is None else round(allow, 1)
-            if allow is not None and stress > allow:
+            c.block_allowable_mpa = None if block_allow is None else round(block_allow, 1)
+            if block_allow is not None and stress > block_allow:
                 c.passed = False
-                c.failed_checks.append(f"{req.block_material} block web stress {stress:.1f} > {allow:.1f} MPa")
+                c.failed_checks.append(f"{req.block_material} block web stress {stress:.1f} > {block_allow:.1f} MPa")
             if req.block_rated_load_n and load > req.block_rated_load_n:
                 c.passed = False
                 c.failed_checks.append(f"Block load {load:.0f} N > rated {req.block_rated_load_n:.0f} N")
+            if req.fault_clearing_s:
+                # Conductor withstand at this fault level (the first analysis ran without fault_ka).
+                for chk in r.checks:
+                    if not chk["passed"] and chk["name"] not in c.failed_checks:
+                        c.passed = False
+                        c.failed_checks.append(chk["name"])
+        return c.passed
+
+    # Rank and tag only options that pass every check including the support blocks; the block check runs
+    # lazily in rank order, so only as many options as are needed are analysed a second time.
+    def best(options: list[DesignOption], key) -> DesignOption | None:
+        return next((c for c in sorted(options, key=key) if block_ok(c)), None)
+
+    prelim = [c for c in candidates if c.passed]
+    cost_key = lambda c: (c.copper_mm2_per_phase, c.inside_w_mm * c.inside_h_mm, c.max_loading_pct)
+    passing = []
+    for c in sorted(prelim, key=cost_key):
+        if len(passing) >= req.top_n:
+            break
+        if block_ok(c):
+            passing.append(c)
+    if prelim:
+        least_cu = best(prelim, lambda c: (c.copper_mm2_per_phase, c.inside_w_mm * c.inside_h_mm))
+        smallest = best(prelim, lambda c: (c.inside_w_mm * c.inside_h_mm, c.copper_mm2_per_phase))
+        margin = best(prelim, lambda c: (c.max_loading_pct, c.copper_mm2_per_phase))
+        for c, tag in ((least_cu, "least copper"), (smallest, "smallest enclosure"), (margin, "most margin")):
+            if c is None:
+                continue
+            c.tags.append(tag)
+            if c not in passing:
+                passing.append(c)
+    failing = sorted((c for c in candidates if not c.passed), key=lambda c: c.max_loading_pct)
+    ranked = passing + (failing[: max(0, req.top_n - len(passing))] if len(passing) < 3 else [])
+    for i, c in enumerate(ranked, 1):
+        c.rank = i
+
+    if req.fault_ka:
         notes.append(f"Support blocks: {req.block_material}, {req.block_thickness_mm:g} mm thick along the run, "
                      f"supports every {req.support_span_m:g} m. Web stress = peak cable force x span / "
                      f"(block thickness x ligament between cables), allowable = tensile strength / "
                      f"{req.block_safety_factor:g} [screening; material values UNVERIFIED]. A tested block "
                      "rating (CSA C22.2 No. 273 / IEEE C37.23 short-circuit test) governs.")
+        if not req.fault_clearing_s:
+            notes.append("Conductor short-circuit withstand not applied to the options: give fault_clearing_s "
+                         "(cable bus analysis reports it as a failed check until then).")
     notes.append("Enclosure sizes are a configurable catalogue (inside width x height, inches); clearances "
                  f"{req.edge_clearance_mm:g} mm to the side rails and {req.vertical_clearance_mm:g} mm to the covers "
                  "are design defaults, not code values.")

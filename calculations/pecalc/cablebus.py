@@ -60,7 +60,9 @@ class CableBusInput:
     tier_spacing_mm: float | None = None  # centre-to-centre between tiers; default = spacing
     pattern: str = "auto"              # e.g. "ABCCBA" or "ABCCBA/CBAABC" for tiers, or "auto"
     insulation_temp_c: int = 90
-    terminal_temp_c: int = 90          # equipment termination rating (NEC 110.14(C) / CEC 4-006)
+    # Equipment termination rating (NEC 110.14(C) / CEC 4-006). None = derive from the voltage: 75 C up to
+    # 2000 V (NEC 110.14(C)(1)(b)), 90 C above 2000 V (NEC 110.40). An explicit value always wins.
+    terminal_temp_c: int | None = None
     ambient_c: float = 40.0
     # Ampacity method: "auto" (datasheet if given, else code table for LV, else
     # calculated), "table", "datasheet" or "calculated" (IEC 60287 thermal model).
@@ -164,6 +166,61 @@ class CableBusResult:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self) | {"passed": self.passed}, indent=2, default=str)
+
+
+def default_terminal_temp_c(voltage_v: float) -> tuple[int, str]:
+    """Default equipment termination temperature and its basis (used when terminal_temp_c is None)."""
+    if voltage_v <= 2000:
+        return 75, ("Termination temperature defaulted to 75 C: NEC 110.14(C)(1)(b) (circuits over 100 A or "
+                    "conductors larger than 1 AWG; cable bus conductors are 1/0 minimum per NEC 370.20(A)) "
+                    "[clause text UNVERIFIED]. Set terminal_temp_c if the equipment is listed for 90 C.")
+    return 90, "Termination temperature defaulted to 90 C above 2000 V: NEC 110.40 [clause text UNVERIFIED]."
+
+
+def termination_ampacity(inp: CableBusInput, size: str, terminal_temp_c: int) -> tuple[float | None, str, str]:
+    """Termination ampacity per conductor and the table used: (ampacity or None, table key, reason if None).
+
+    NEC 110.14(C): the termination provisions are based on Table 310.16 (raceway) whatever the installation
+    (same rule as sizing.py); CEC 4-006 keeps the installation's table [UNVERIFIED which CEC table applies].
+    Only <= 2000 V tables are loaded.
+    """
+    table = "raceway" if inp.code == "NEC" else "free_air"
+    if inp.voltage_v > 2000:
+        return None, table, ("code ampacity tables are loaded for <= 2000 V only (above that, check the "
+                             "equipment termination rating, NEC 110.40)")
+    try:
+        amp.check_status(inp.code, inp.allow_placeholder_data)
+        a = amp.table_ampacity(inp.code, table, inp.material, size, terminal_temp_c)
+    except (ValueError, amp.DataStatusError) as e:
+        return None, table, str(e)
+    if a is None:
+        return None, table, f"no {inp.code} {table} table row for {inp.material} {size}"
+    return a, table, ""
+
+
+def require_ambient_below(ambient_c: float, conductor_temp_c: float) -> None:
+    """A site ambient at or above the conductor rating gives zero ampacity (and later a zero-division)."""
+    if ambient_c >= conductor_temp_c:
+        raise ValueError(f"ambient_c ({ambient_c:g} C) must be below the conductor temperature rating "
+                         f"({conductor_temp_c:g} C)")
+
+
+def ambient_factor_checked(ambient_c: float, conductor_temp_c: int, rated_ambient_c: float = 30.0) -> float:
+    """amp.ambient_factor for the cable bus paths: raises instead of returning 0."""
+    require_ambient_below(ambient_c, conductor_temp_c)
+    return amp.ambient_factor(ambient_c, conductor_temp_c, rated_ambient_c)
+
+
+def validate_input(inp: CableBusInput) -> None:
+    """Range checks on the numeric inputs, with messages that name the input."""
+    validate.voltage("voltage_v", inp.voltage_v)
+    validate.positive("current_a", inp.current_a, "A")
+    validate.positive("length_m", inp.length_m, "m")
+    validate.positive("frequency_hz", inp.frequency_hz, "Hz")
+    validate.count_at_least("tiers", inp.tiers)
+    validate.count_at_least("conductors_per_phase", inp.conductors_per_phase)
+    if inp.fault_ka is not None:
+        validate.non_negative("fault_ka", inp.fault_ka, "kA")
 
 
 # --- cable library (manufacturer rows) --------------------------------------
@@ -312,7 +369,7 @@ def _library_ampacity(inp: CableBusInput, spec: CableSpec) -> tuple[float, str]:
         base, ref, src = inp.cable_ampacity_a, inp.cable_ampacity_ambient_c, "Supplied rating"
     else:
         base, ref, src = spec.ampacity_free_air_a, spec.ampacity_ref_ambient_c, f"{spec.manufacturer} printed rating"
-    f = amp.ambient_factor(inp.ambient_c, spec.temp_c, ref)
+    f = ambient_factor_checked(inp.ambient_c, spec.temp_c, ref)
     return base * f, (f"{src} {base:.0f} A at {ref:.0f} C ({spec.temp_c} C conductor, basis: {spec.ampacity_basis}) "
                       f"x ambient factor {f:.3f} ({inp.ambient_c:.0f} C)")
 
@@ -494,7 +551,7 @@ def per_cable_ampacity(inp: CableBusInput, spec: CableSpec | None = None) -> tup
             return _library_ampacity(inp, spec)
         if not inp.cable_ampacity_a:
             raise ValueError("ampacity_method 'datasheet' needs cable_ampacity_a")
-        f = amp.ambient_factor(inp.ambient_c, inp.insulation_temp_c, inp.cable_ampacity_ambient_c)
+        f = ambient_factor_checked(inp.ambient_c, inp.insulation_temp_c, inp.cable_ampacity_ambient_c)
         return (inp.cable_ampacity_a * f,
                 f"Supplied rating {inp.cable_ampacity_a:.0f} A at {inp.cable_ampacity_ambient_c:.0f} C "
                 f"x ambient factor {f:.3f} ({inp.ambient_c:.0f} C)")
@@ -507,7 +564,7 @@ def per_cable_ampacity(inp: CableBusInput, spec: CableSpec | None = None) -> tup
         raise ValueError(f"No free-air ampacity for {inp.material} {inp.size}")
     info = amp.table_info(inp.code, "free_air")
     rated = _load_rated_ambient(inp.code)
-    f = amp.ambient_factor(inp.ambient_c, inp.insulation_temp_c, rated)
+    f = ambient_factor_checked(inp.ambient_c, inp.insulation_temp_c, rated)
     return base * f, (f"{inp.code} {info.table_name} {base:.0f} A ({inp.insulation_temp_c} C column, "
                       f"data {info.status}) x ambient factor {f:.3f} ({inp.ambient_c:.0f} C)")
 
@@ -733,7 +790,7 @@ def sheath_study(inp: CableBusInput, cons, cs, res, pattern: str, rows: list[Con
 def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
     """Check a cable bus. With shielded cable, compare_bonding also solves the other bonding mode
     (single-point vs both-ends) for the sheath comparison; the designer turns it off for speed."""
-    validate.voltage("voltage_v", inp.voltage_v)
+    validate_input(inp)
     if inp.shield_section_length_m is not None and not 0 < inp.shield_section_length_m <= inp.length_m:
         raise ValueError("shield_section_length_m must be > 0 and no longer than length_m")
     if inp.shield_voltage_limit_v is not None and not inp.shield_voltage_limit_v > 0:
@@ -747,17 +804,31 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
         _check_library(inp, spec)
         size = spec.size
     inp.size = size
+    notes: list[str] = []
+    if inp.terminal_temp_c is None:
+        inp.terminal_temp_c, term_basis = default_terminal_temp_c(inp.voltage_v)
+        notes.append(term_basis)
     cons = None if spec else construction(inp)
+    if inp.cable_od_mm is not None:
+        bare = spec.diameter_mm if spec else cond.diameter_mm(size)
+        if not inp.cable_od_mm > bare:
+            raise ValueError(f"cable_od_mm ({inp.cable_od_mm:g} mm) must be greater than the conductor bare "
+                             f"diameter ({bare:.2f} mm)")
     od = (inp.cable_od_mm or (spec.od_mm if spec else None) or (cons.de_mm if cons else None)
           or (cond.cable_od_mm(size) if inp.voltage_v <= 2000 else None))
     if od is None:
         raise ValueError("Above 2000 V give cable_od_mm or the cable construction (insulation_mm, shield_mm, jacket_mm)")
+    if not inp.cable_od_mm and spec is None and cons is None and inp.voltage_v > 600:
+        notes.append(f"Cable OD {od:.1f} mm is estimated from a 600 V insulation wall, but voltage_v is "
+                     f"{inp.voltage_v:g} V: enter cable_od_mm for the real cable (the insulation wall, spacing and "
+                     "enclosure depend on it).")
     with_shields = inp.shield_bonding == "both_ends"
     if with_shields and cons and cons.shield_mm:
         inp.shield_mean_diameter_mm = inp.shield_mean_diameter_mm or cons.shield_mean_diameter_mm
         inp.shield_area_mm2 = inp.shield_area_mm2 or math.pi * cons.shield_mean_diameter_mm * cons.shield_mm
     method = resolve_method(inp, spec)
-    notes: list[str] = _library_notes(inp, spec, method) if spec else []
+    if spec:
+        notes += _library_notes(inp, spec, method)
     size_text = spec.size_label if spec else cond.size_label(size)
 
     patterns = (candidate_patterns(inp.conductors_per_phase, inp.tiers) if inp.pattern == "auto"
@@ -785,6 +856,7 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
     if method == "calculated":
         if cons is None:
             raise ValueError("The calculated ampacity method needs the cable construction (insulation_mm etc.)")
+        require_ambient_below(inp.ambient_c, inp.insulation_temp_c)
         installation = "isolated" if pitch - od >= 0.75 * od else "flat_touching"
         cache: dict[float, object] = {}
 
@@ -798,8 +870,10 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
                      "IEC 60287. Each cable's own shield loss factor (lambda1) from the sharing solve is included.")
     else:
         a_cable, basis_fixed = per_cable_ampacity(inp, spec)
-        if method == "table":
-            a_term = amp.table_ampacity(inp.code, "free_air", inp.material, size, inp.terminal_temp_c)
+    # Termination limit, whatever the ampacity method (NEC 110.14(C), Table 310.16).
+    a_term, term_table, why = termination_ampacity(inp, size, inp.terminal_temp_c)
+    if a_term is None:
+        notes.append(f"Termination temperature not checked: {why}.")
 
     derate_ds = method == "datasheet" and with_shields
     ds_factors = []
@@ -871,12 +945,19 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
     if method == "table":
         check("Spacing for free-air ampacity basis (>= 1 cable diameter clearance)",
               "NEC 370.80 / CEC 12-2252 [UNVERIFIED]", pitch - od, od, "mm", pitch - od >= od - 1e-6)
+        if inp.tiers > 1:
+            tier_pitch = inp.tier_spacing_mm or pitch      # centre-to-centre, same convention as spacing_mm
+            check("Tier spacing for free-air ampacity basis (>= 1 cable diameter clearance between tiers)",
+                  "NEC 370.80 / CEC 12-2252 [UNVERIFIED]", tier_pitch - od, od, "mm",
+                  tier_pitch - od >= od - 1e-6)
     w = worst[0]
     check("Most heavily loaded conductor within its ampacity", basis, w.current_a, w.ampacity_a, "A",
           w.current_a <= w.ampacity_a, f"{w.phase} at x={w.x_mm} mm; current sharing solved for pattern {pattern}")
     if a_term is not None:
         check("Most heavily loaded conductor within termination rating", clauses["terminal"], max_cur, a_term,
-              "A", max_cur <= a_term, f"{inp.terminal_temp_c} C column, no ambient correction")
+              "A", max_cur <= a_term,
+              f"{inp.terminal_temp_c} C column of {amp.table_info(inp.code, term_table).table_name}, "
+              "no ambient correction")
     check("Voltage drop (worst phase)", clauses["vd"], vd_pct, inp.max_vd_pct, "%", vd_pct <= inp.max_vd_pct,
           f"phase {vd_phase}, each phase against its own sending-end voltage")
 
@@ -903,6 +984,10 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
                   f"{inp.fault_clearing_s} s clearing, {inp.insulation_temp_c}->{inp.insulation_sc_limit_c} C, "
                   "equal fault sharing among paralleled conductors assumed")
         else:
+            check("Conductor short-circuit withstand (NOT CHECKED: fault_clearing_s missing)", "ICEA P-32-382",
+                  0.0, inp.fault_ka, "kA", False,
+                  "fault_ka is given but fault_clearing_s is not, so the conductor withstand cannot be checked; "
+                  "give fault_clearing_s")
             notes.append("Conductor short-circuit withstand not checked: give fault_clearing_s.")
         notes.append("Not checked: shield short-circuit withstand; mutual heating between stacked tiers.")
 
@@ -950,6 +1035,9 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
     if inp.shield_bonding in ("single_point", "both_ends"):
         lam_max = max(shield_lambda1(r.index) for r in rows)
         sheath = sheath_study(inp, cons, cs, res, pattern, rows, shield_i, shield_loss, lam_max, compare_bonding)
+        if inp.shield_bonding == "single_point" and inp.shield_voltage_limit_v is None:
+            notes.append("Shield standing voltage was not checked against a limit: shield_voltage_limit_v is not "
+                         "set (single-point bonding), so there is no pass/fail on the open-end voltage.")
         if (inp.shield_bonding == "single_point" and inp.shield_voltage_limit_v is not None
                 and sheath["standing_v"] is not None):
             check("Shield standing voltage at open end (single-point bonding, normal load)",

@@ -216,7 +216,8 @@ def cablebus_design(a: argparse.Namespace) -> int:
     req = DesignRequest(code=a.code, voltage_v=a.voltage, current_a=a.current, length_m=_length_m(a.length, a.length_unit),
                         material=a.material, ambient_c=a.ambient, sizes=tuple(a.sizes.split(",")) if a.sizes else None,
                         insulation=a.insulation, insulation_mm=a.insulation_mm, shield_mm=a.shield_mm,
-                        jacket_mm=a.jacket_mm, fault_ka=a.fault_ka, x_over_r=a.xr, support_span_m=a.support_span,
+                        jacket_mm=a.jacket_mm, fault_ka=a.fault_ka, fault_clearing_s=a.fault_time,
+                        shield_voltage_limit_v=a.shield_voltage_limit, x_over_r=a.xr, support_span_m=a.support_span,
                         block_material=a.block, block_rated_load_n=a.block_rating, max_loading_pct=a.max_loading,
                         allow_placeholder_data=a.allow_placeholder_data)
     r = design_options(req)
@@ -292,7 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--spacing", type=float, help="centre spacing in a tier, mm (default 2 x OD)")
     c.add_argument("--tier-spacing", type=float, help="centre spacing between tiers, mm")
     c.add_argument("--pattern", default="auto", help="e.g. ABCCBA or ABCCBA/CBAABC, default: try several")
-    c.add_argument("--terminal-temp", type=int, choices=[60, 75, 90], default=90)
+    c.add_argument("--terminal-temp", type=int, choices=[60, 75, 90], default=None,
+                   help="termination rating, C (default: 75 up to 2000 V, 90 above)")
     c.add_argument("--ampacity-method", choices=["auto", "table", "datasheet", "calculated"], default="auto",
                    help="auto: datasheet if given, else code table (<=2000 V), else IEC 60287 calculation")
     c.add_argument("--insulation", choices=["XLPE", "EPR", "PVC", "XHHW", "RW90"], default="XLPE")
@@ -401,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--jacket-mm", type=float, default=0.0)
     d.add_argument("--xr", type=float, default=15.0)
     d.add_argument("--support-span", type=float, default=0.9144)
+    d.add_argument("--fault-time", type=float, help="fault clearing time, s (enables conductor withstand check)")
+    d.add_argument("--shield-voltage-limit", type=float, help="owner / utility shield standing-voltage limit, V")
     d.add_argument("--block", choices=["GPO-3", "GPO-2", "GPO-1"], default="GPO-3")
     d.add_argument("--block-rating", type=float, help="tested block load per cable position, N")
     d.add_argument("--max-loading", type=float, default=95.0)
