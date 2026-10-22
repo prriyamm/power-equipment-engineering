@@ -181,7 +181,7 @@ def evaluate(inp: FeederInput, size: str, sets: int) -> Option:
         required_term = (cont_mult * inp.continuous_a + inp.noncontinuous_a) / sets
         term_table = amp.table_info(code, term_install).table_name
         checks.append(Check("Terminal-column ampacity >= 125 % continuous + non-continuous",
-                            f"{clauses['continuous']}(a), {clauses['terminal']}",
+                            f"{clauses['continuous']}, {clauses['terminal']}",
                             a_cond, round(required_term, 1), "A", a_cond >= required_term,
                             f"lesser of {term_table} {inp.insulation_temp_c} C insulation column ({a_ins:.0f} A) and "
                             f"{t_term} C terminal column ({a_term:.0f} A), no derating; the conductor cannot "
