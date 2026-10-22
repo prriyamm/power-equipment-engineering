@@ -172,9 +172,12 @@ def default_terminal_temp_c(voltage_v: float) -> tuple[int, str]:
     """Default equipment termination temperature and its basis (used when terminal_temp_c is None)."""
     if voltage_v <= 2000:
         return 75, ("Termination temperature defaulted to 75 C: NEC 110.14(C)(1)(b) (circuits over 100 A or "
-                    "conductors larger than 1 AWG; cable bus conductors are 1/0 minimum per NEC 370.20(A)) "
-                    "[clause text UNVERIFIED]. Set terminal_temp_c if the equipment is listed for 90 C.")
-    return 90, "Termination temperature defaulted to 90 C above 2000 V: NEC 110.40 [clause text UNVERIFIED]."
+                    "conductors larger than 1 AWG; cable bus conductors are 1/0 minimum per NEC 370.20(A)(2)) "
+                    "(NFPA 70-2023 pp. 70-65, 70-253). Set terminal_temp_c to 90 if the equipment is listed and "
+                    "identified for 90 C conductors (110.14(C)(1)(b)(2)), or to the listed rating of separately "
+                    "installed pressure connectors (110.14(C)(2)).")
+    return 90, ("Termination temperature defaulted to 90 C above 2000 V: NEC 110.40, unless otherwise identified "
+                "(NFPA 70-2023 p. 70-73).")
 
 
 def termination_ampacity(inp: CableBusInput, size: str, terminal_temp_c: int) -> tuple[float | None, str, str]:
@@ -957,7 +960,8 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
         check("Most heavily loaded conductor within termination rating", clauses["terminal"], max_cur, a_term,
               "A", max_cur <= a_term,
               f"{inp.terminal_temp_c} C column of {amp.table_info(inp.code, term_table).table_name}, "
-              "no ambient correction")
+              "no ambient correction; 110.14(C)(2) permits separately installed pressure connectors at their "
+              "listed rating: set terminal_temp_c to it if used")
     check("Voltage drop (worst phase)", clauses["vd"], vd_pct, inp.max_vd_pct, "%", vd_pct <= inp.max_vd_pct,
           f"phase {vd_phase}, each phase against its own sending-end voltage")
 
