@@ -163,7 +163,7 @@ class Item7InputValidation(unittest.TestCase):
         self._raises("conductors_per_phase must be a whole number of at least 1", conductors_per_phase=0)
 
     def test_fault_ka(self):
-        self._raises("fault_ka must be 0 or greater", fault_ka=-5.0)
+        self._raises(r"fault_ka must be 0( kA)? or greater", fault_ka=-5.0)
 
     def test_od_must_exceed_bare_conductor(self):
         # 500 kcmil bare diameter is about 23 mm
@@ -174,7 +174,7 @@ class Item7InputValidation(unittest.TestCase):
                          (dict(length_m=-1.0), "length_m must be greater than 0 m"),
                          (dict(frequency_hz=0.0), "frequency_hz must be greater than 0 Hz"),
                          (dict(tier_options=(0,)), "tiers"),
-                         (dict(fault_ka=-1.0), "fault_ka must be 0 or greater")):
+                         (dict(fault_ka=-1.0), r"fault_ka must be 0( kA)? or greater")):
             with self.subTest(kw=kw), self.assertRaisesRegex(ValueError, text):
                 design_options(DesignRequest(**kw))
 
