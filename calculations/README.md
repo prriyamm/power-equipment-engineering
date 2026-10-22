@@ -44,7 +44,7 @@ python3 -m unittest discover -s tests -v
 | `ampacity.py` | NEC / CEC tables (status-flagged data), ambient and grouping correction, clause references |
 | `sizing.py` | feeder sizing: parallel sets, terminal (110.14(C), always Table 310.16) and continuous-load rules, NEC 240.4(D) small-conductor limits, voltage drop, losses, short-circuit withstand |
 | `reactance_derived.py` | NEC Table 9 reactance plus DERIVED rows for 700/800/900 and 1250–2000 kcmil (ln-kcmil interpolation/extrapolation, touching-trefoil floor); flagged in results |
-| `validate.py` | shared input checks (voltage, power factor, clearing time, X/R) raising `ValueError` |
+| `validate.py` | shared input checks (voltage, power factor, clearing time, X/R, positive / non-negative / range / integer / one-of) raising `ValueError` that names the input |
 | `impedance.py` | multi-conductor impedance (Carson), current sharing among paralleled conductors, bonded shield circulating currents, open-circuit (single-point bonded) shield voltages |
 | `forces.py` | time-domain short-circuit forces on any conductor layout (worst case over inception angle) |
 | `thermal.py` | calculated ampacity: IEC 60287 / Neher-McGrath thermal model for cables in free air, dielectric loss, shield loss factor |
