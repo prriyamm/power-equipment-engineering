@@ -171,7 +171,11 @@ class CableBus(unittest.TestCase):
     def test_reference_concept_4000a(self):
         # Reference design: 4000 A, 600 V, 6 x 750 kcmil Cu per phase.
         r = analyse(CableBusInput(voltage_v=600, current_a=4000, conductors_per_phase=6, tiers=2, size="750"))
-        self.assertTrue(r.passed)
+        # Changed by the review fixes: the termination check now uses NEC Table 310.16 (raceway) at the derived
+        # 75 C rating (475 A for 750 kcmil Cu), not the free-air table, so the 724 A worst conductor fails it.
+        # Every other check (free-air ampacity, spacing, voltage drop) still passes.
+        self.assertEqual([c["name"] for c in r.checks if not c["passed"]],
+                         ["Most heavily loaded conductor within termination rating"])
         # Unequal sharing makes the worst conductor carry more than the 666.7 A equal share.
         self.assertGreater(max(c.current_a for c in r.conductors), 4000 / 6)
 
@@ -516,7 +520,9 @@ class CableBusDesigner(unittest.TestCase):
 
     def test_more_tiers_gives_narrower_enclosure(self):
         from pecalc.cablebus_design import DesignRequest, design_options
-        r = design_options(DesignRequest(voltage_v=600, current_a=4000, sizes=("500",), top_n=20))
+        # 2000 A (was 4000 A): with the termination limit now taken from Table 310.16 (380 A per 500 kcmil
+        # conductor at 75 C), 4000 A needs 11+ per phase and no 1-tier layout fits the enclosure catalogue.
+        r = design_options(DesignRequest(voltage_v=600, current_a=2000, sizes=("500",), top_n=20))
         widths = {}
         for o in r.options:
             widths.setdefault(o.per_phase, {})[o.tiers] = o.inside_w_mm

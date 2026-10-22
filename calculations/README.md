@@ -8,7 +8,7 @@ From this folder (`calculations/`):
 
 ```
 python3 -m pecalc feeder --voltage 480 --continuous 400 --length 100
-python3 -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 4 --length 200 --fault-ka 65 --xr 20
+python3 -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 7 --length 200 --fault-ka 65 --xr 20 --fault-time 0.5
 python3 -m pecalc cablebus-design --voltage 15000 --current 2000 --length 200 --insulation EPR --insulation-mm 7.2 \
     --shield-mm 0.13 --jacket-mm 2 --fault-ka 40 --choose 3 --report cablebus-option3.html
 python3 -m pecalc transformer --load-kva 1180 --growth 1.25 --hv 13800 --lv 480 --target-z 5.75 --tune --doe-eff 99.48

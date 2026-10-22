@@ -13,7 +13,7 @@ Python 3.10+ with no extra packages; works on Windows, macOS and Linux.
 ```
 cd calculations
 python3 -m pecalc feeder --voltage 480 --continuous 400 --length 100
-python3 -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 4 --length 200 --fault-ka 65 --xr 20
+python3 -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 7 --length 200 --fault-ka 65 --xr 20 --fault-time 0.5
 python3 -m unittest discover -s tests
 ```
 

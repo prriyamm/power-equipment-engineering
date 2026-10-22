@@ -22,7 +22,7 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: CLI smoke test
         working-directory: calculations
-        run: python -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 4 --length 200 --fault-ka 65 --xr 20
+        run: python -m pecalc cablebus --voltage 600 --current 3000 --size 750 --per-phase 7 --length 200 --fault-ka 65 --xr 20 --fault-time 0.5
 
   test-numpy:
     runs-on: ubuntu-latest

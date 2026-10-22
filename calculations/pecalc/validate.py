@@ -44,6 +44,14 @@ def clearing_time(name: str, value: float) -> float:
     return v
 
 
+def count_at_least(name: str, value: int, minimum: int = 1) -> int:
+    """Whole-number count (conductors per phase, tiers) that must be >= minimum."""
+    v = _finite(name, value)
+    if v != int(v) or v < minimum:
+        raise ValueError(f"{name} must be a whole number of at least {minimum}, got {value!r}")
+    return int(v)
+
+
 def x_over_r(name: str, value: float) -> float:
     """X/R ratio must be > 0."""
     v = _finite(name, value)
