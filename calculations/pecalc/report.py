@@ -1,7 +1,7 @@
 """Printable calculation package (self-contained HTML; print to PDF from a browser).
 
 Sections: header (project, revision, date, engine version and commit, input
-hash), result banner, data-status warnings, inputs, results, checks with code
+hash, table data fingerprint, engine that saved the case), result banner, data-status warnings, inputs, results, checks with code
 clauses, notes, and a sign-off block for the engineer of record.
 """
 
@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import __version__
 from .cases import Case
+from .datainfo import data_fingerprint
 
 
 def _esc(v) -> str:
@@ -172,10 +173,15 @@ def render(case: Case, result, results_first: bool = False) -> str:
         f"<h1>{_esc(case.title or module.title())}</h1>",
         _table([["Project", case.project or "-", "Revision", case.revision or "-"],
                 ["Module", module, "Date", now],
-                ["Engine", f"pecalc {__version__} ({_commit()})", "Input hash", case.input_hash()]]),
+                ["Engine", f"pecalc {__version__} ({_commit()})", "Input hash", case.input_hash()],
+                ["Table data", data_fingerprint(), "Saved with",
+                 f"pecalc {case.engine.get('pecalc', '?')}, data {case.engine.get('data', '?')}" if case.engine else "-"]]),
         f"<div class='banner {'pass' if ok else 'fail'}'>RESULT: {'PASS' if ok else 'FAIL'} - "
         f"{sum(1 for c in _all_checks(module, result))} checks</div>",
     ]
+    mismatch = case.engine_mismatch()
+    if mismatch:
+        parts.append(f"<div class='banner warn'>{_esc(mismatch)}</div>")
     if flagged:
         parts.append("<div class='banner warn'>This calculation uses data or methods marked "
                      f"{' / '.join(flagged)}. Verify them against the licensed code or standard before "

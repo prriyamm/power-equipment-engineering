@@ -8,11 +8,13 @@ A case file is JSON:
       "revision": "A",
       "module": "feeder" | "cablebus" | "bus" | "transformer" | "lugs",
       "options": {"tune_impedance": true},          # module-specific, optional
-      "inputs": { ...fields of the module's input dataclass... }
+      "inputs": { ...fields of the module's input dataclass... },
+      "engine": {"pecalc": "0.1.0", "data": "<fingerprint>"}   # written by save(), optional
     }
 
 Unknown input names are rejected so a typo cannot silently fall back to a
-default. The input hash in reports ties a calculation to its exact inputs.
+default. The input hash in reports ties a calculation to its exact inputs; the
+engine stamp records the engine version and table data that saved the file.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 from .cablebus import CableBusInput, analyse
+from .datainfo import engine_stamp
 from .lugs import LugInput, select_lugs
 from .sizing import FeederInput, size_feeder
 from .switchgear import BusInput, analyse_bus
@@ -47,6 +50,7 @@ class Case:
     title: str = ""
     revision: str = ""
     options: dict = dataclasses.field(default_factory=dict)
+    engine: dict = dataclasses.field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> "Case":
@@ -60,7 +64,15 @@ class Case:
         return cls(**data)
 
     def save(self, path: str | Path) -> None:
+        self.engine = engine_stamp()
         Path(path).write_text(json.dumps(dataclasses.asdict(self), indent=2) + "\n")
+
+    def engine_mismatch(self) -> str:
+        """Empty when the file has no stamp, or was saved by this engine version and table data."""
+        now = engine_stamp()
+        diff = [f"{k} {self.engine[k]} (now {now[k]})" for k in ("pecalc", "data")
+                if self.engine.get(k) and self.engine[k] != now[k]]
+        return ("Case file saved with " + ", ".join(diff) + ". Results can differ from the saved run.") if diff else ""
 
     def input_object(self):
         if self.module not in MODULES:
