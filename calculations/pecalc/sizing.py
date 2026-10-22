@@ -16,6 +16,7 @@ from . import ampacity as amp
 from . import conductors as cond
 from . import reactance_derived as rxd
 from . import validate
+from .lugs import default_terminal_temp
 
 FT_PER_M = 1 / cond.FT
 
@@ -76,6 +77,7 @@ class Option:
     r_ohm_per_km: float
     x_ohm_per_km: float
     checks: list[Check] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -121,13 +123,15 @@ def small_conductor_limit_a(material: str, size: str) -> float | None:
 
 def _short_circuit_check(inp: FeederInput, size: str, sets: int) -> Check | None:
     """ICEA P-32-382 adiabatic withstand (see conductors.adiabatic_withstand_a)."""
-    if not (inp.fault_ka and inp.fault_clearing_s):
+    if inp.fault_ka is None or inp.fault_clearing_s is None:
         return None
     withstand_a = cond.adiabatic_withstand_a(inp.material, cond.AREA_CMIL[size] * sets, inp.insulation_temp_c,
                                              inp.insulation_sc_limit_c, inp.fault_clearing_s)
     return Check("Short-circuit withstand (all sets)", "ICEA P-32-382", round(withstand_a / 1000, 1),
                  inp.fault_ka, "kA", withstand_a / 1000 >= inp.fault_ka,
-                 f"{inp.fault_clearing_s} s clearing, {inp.insulation_temp_c}->{inp.insulation_sc_limit_c} C")
+                 f"{inp.fault_clearing_s} s clearing, {inp.insulation_temp_c}->{inp.insulation_sc_limit_c} C; "
+                 "250 C is the thermoset (XLPE/EPR) limit, thermoplastic insulation has a lower limit "
+                 "[UNVERIFIED, ICEA P-32-382]")
 
 
 def evaluate(inp: FeederInput, size: str, sets: int) -> Option:
@@ -146,7 +150,16 @@ def evaluate(inp: FeederInput, size: str, sets: int) -> Option:
     # installation; free-air (Table 310.17) ampacity applies to the conductor only.
     # CEC Rule 4-006 is left on the installation's own table [UNVERIFIED which CEC table applies].
     term_install = "raceway" if code == "NEC" else inp.installation
-    a_term = amp.table_ampacity(code, term_install, mat, size, inp.terminal_temp_c)
+    # NEC 110.14(C)(1) / CEC 4-006: when no terminal rating is given, the default depends on the
+    # candidate conductor size (60 C for 14-1 AWG or circuits of 100 A or less, else 75 C).
+    notes: list[str] = []
+    if inp.terminal_temp_c is None:
+        t_term, t_basis = default_terminal_temp(code, inp.load_a, size)
+        notes.append(f"Terminal temperature {t_term} C by default: {t_basis}")
+    else:
+        t_term = inp.terminal_temp_c
+        notes.append(f"Terminal temperature {t_term} C as given (equipment marking)")
+    a_term = amp.table_ampacity(code, term_install, mat, size, t_term)
     if a_ins is None or a_term is None:
         raise ValueError(f"No {code} {inp.installation} ampacity for {mat} {size}")
 
@@ -154,6 +167,13 @@ def evaluate(inp: FeederInput, size: str, sets: int) -> Option:
     f_ccc = amp.ccc_factor(code, inp.current_carrying_per_raceway) if inp.installation == "raceway" else 1.0
     derated = a_ins * f_amb * f_ccc
     allowable = min(derated, a_term)
+    # NEC 110.14(C): the conductor cannot use a column above the lowest temperature rating of any
+    # connected termination or conductor, so the termination check uses the lesser of the conductor's
+    # own (undeflated) insulation-column ampacity and the terminal column.
+    a_cond = min(a_ins, a_term)
+    if inp.installation == "raceway" and sets * inp.phases > inp.current_carrying_per_raceway:
+        notes.append(f"{sets} sets x {inp.phases} phase conductors exceed current_carrying_per_raceway="
+                     f"{inp.current_carrying_per_raceway}: the grouping adjustment assumes separate raceways per set")
     per_set_load = inp.load_a / sets
 
     if code == "NEC":
@@ -161,9 +181,11 @@ def evaluate(inp: FeederInput, size: str, sets: int) -> Option:
         required_term = (cont_mult * inp.continuous_a + inp.noncontinuous_a) / sets
         term_table = amp.table_info(code, term_install).table_name
         checks.append(Check("Terminal-column ampacity >= 125 % continuous + non-continuous",
-                            f"{clauses['continuous']}(a), {clauses['terminal']}",
-                            a_term, round(required_term, 1), "A", a_term >= required_term,
-                            f"{term_table} {inp.terminal_temp_c} C column, no derating"))
+                            f"{clauses['continuous']}, {clauses['terminal']}",
+                            a_cond, round(required_term, 1), "A", a_cond >= required_term,
+                            f"lesser of {term_table} {inp.insulation_temp_c} C insulation column ({a_ins:.0f} A) and "
+                            f"{t_term} C terminal column ({a_term:.0f} A), no derating; the conductor cannot "
+                            f"use a column above its terminations' rating (NEC 110.14(C))"))
         # NEC 240.4(D): the overcurrent device for 18-10 AWG may not exceed the listed rating.
         # The device must be at least 125 % continuous + non-continuous (215.3; 100 % if listed),
         # so that minimum rating is checked against the limit. Small sizes cannot be paralleled.
@@ -182,7 +204,7 @@ def evaluate(inp: FeederInput, size: str, sets: int) -> Option:
         checks.append(Check("Allowable ampacity >= continuous / 0.8 + non-continuous",
                             f"{clauses['continuous']}, {clauses['terminal']}",
                             round(allowable, 1), round(required, 1), "A", allowable >= required,
-                            f"min({a_ins:.0f} A x {f_amb:.3f} x {f_ccc:.2f}, {inp.terminal_temp_c} C column {a_term:.0f} A)"))
+                            f"min({a_ins:.0f} A x {f_amb:.3f} x {f_ccc:.2f}, {t_term} C column {a_term:.0f} A)"))
     checks.append(Check("Allowable ampacity (lesser of derated and terminal column) >= load",
                         clauses["terminal"], round(allowable, 1), round(per_set_load, 1), "A",
                         allowable >= per_set_load))
@@ -208,36 +230,60 @@ def evaluate(inp: FeederInput, size: str, sets: int) -> Option:
 
     return Option(sets, size, cond.size_label(size), round(cond.area_mm2(size) * sets, 1),
                   round(allowable, 1), round(vd_pct, 2), round(vd_v, 2), round(loss_w, 1),
-                  round(r * 1000, 4), round(x * 1000, 4), checks)
+                  round(r * 1000, 4), round(x * 1000, 4), checks, notes)
 
 
-def size_feeder(inp: FeederInput) -> FeederResult:
+def _validate_input(inp: FeederInput) -> None:
     if inp.code not in amp.CODES:
         raise ValueError(f"code must be one of {amp.CODES}")
     if inp.material not in cond.MATERIALS:
         raise ValueError("material must be 'Cu' or 'Al'")
+    validate.non_negative("continuous_a", inp.continuous_a, "A")
+    validate.non_negative("noncontinuous_a", inp.noncontinuous_a, "A")
     if inp.load_a <= 0:
-        raise ValueError("load current must be positive")
+        raise ValueError("load current must be positive (continuous_a + noncontinuous_a must be greater than 0 A)")
     validate.voltage("voltage_v", inp.voltage_v)
+    validate.one_of("phases", inp.phases, (1, 3))
+    validate.positive("length_m", inp.length_m, "m")
     validate.power_factor("power_factor", inp.power_factor)
+    validate.positive("max_vd_pct", inp.max_vd_pct, "%")
+    validate.positive("frequency_hz", inp.frequency_hz, "Hz")
+    validate.integer_at_least("current_carrying_per_raceway", inp.current_carrying_per_raceway, 1)
+    validate.in_range("ambient_c", inp.ambient_c, -50, 100, "C")
+    validate.in_range("conductor_temp_for_vd_c", inp.conductor_temp_for_vd_c, -50, 250, "C")
+    validate.one_of("insulation_temp_c", inp.insulation_temp_c, amp.COLUMNS)
+    if inp.terminal_temp_c is not None:
+        validate.one_of("terminal_temp_c", inp.terminal_temp_c, amp.COLUMNS)
+    if inp.sets is not None:
+        validate.integer_at_least("sets", inp.sets, 1)
+    validate.integer_at_least("max_sets", inp.max_sets, 1)
+    validate.positive("insulation_sc_limit_c", inp.insulation_sc_limit_c, "C")
+    if (inp.fault_ka is None) != (inp.fault_clearing_s is None):
+        raise ValueError("fault_ka and fault_clearing_s must be given together for the short-circuit check; "
+                         "only one was given")
     if inp.fault_clearing_s is not None:
         validate.clearing_time("fault_clearing_s", inp.fault_clearing_s)
-    if inp.fault_ka is not None and inp.fault_ka <= 0:
-        raise ValueError(f"fault_ka must be greater than 0 kA, got {inp.fault_ka!r}")
+    if inp.fault_ka is not None:
+        validate.positive("fault_ka", inp.fault_ka, "kA")
     if inp.installation not in amp.INSTALLATIONS:
         raise ValueError(f"installation must be one of {amp.INSTALLATIONS}")
     if inp.installation == "raceway" and inp.conduit not in rxd.RACEWAYS:
         raise ValueError(f"conduit must be one of {rxd.RACEWAYS}")
+    if inp.code == "NEC" and inp.voltage_v > 1000:
+        raise ValueError("voltage_v above 1000 V is outside NEC Article 215 (feeders not over 1000 V ac, "
+                         "NFPA 70-2023 215.1); Part III of Article 235 applies above 1000 V and is not implemented")
     if inp.voltage_v > 2000:
         raise ValueError("This module covers 0-2000 V conductors; medium-voltage tables are not loaded yet")
-    if inp.terminal_temp_c is None:
-        inp.terminal_temp_c = 60 if inp.load_a <= 100 else 75
+
+
+def size_feeder(inp: FeederInput) -> FeederResult:
+    _validate_input(inp)
     status = amp.check_status(inp.code, inp.allow_placeholder_data)
     info = amp.table_info(inp.code, inp.installation)
 
     table = json.loads((amp.DATA / f"ampacity_{inp.code.lower()}.json").read_text())
     sizes = [s for s in cond.SIZES if s in table[inp.installation][inp.material]]
-    set_range = [inp.sets] if inp.sets else range(1, inp.max_sets + 1)
+    set_range = [inp.sets] if inp.sets is not None else range(1, inp.max_sets + 1)
 
     options = []
     for n in set_range:
@@ -259,6 +305,9 @@ def size_feeder(inp: FeederInput) -> FeederResult:
                          "conductor ampacity from Table 310.17.")
     else:
         notes.append("Overcurrent device selection and protection (CEC 14-104) are not checked here.")
+    if inp.installation == "raceway":
+        notes.append(f"Grouping adjustment uses current_carrying_per_raceway={inp.current_carrying_per_raceway} "
+                     "current-carrying conductors per raceway (default 3: each parallel set in its own raceway).")
     if not options:
         notes.append("No conductor size passes every check within the allowed number of sets.")
     best = options[0] if options else None
@@ -271,5 +320,5 @@ def size_feeder(inp: FeederInput) -> FeederResult:
         best = options[0]
         lugs = select_lugs(LugInput(code=inp.code, size=best.size, material=inp.material, sets_per_phase=best.sets,
                                     phases=inp.phases, circuit_current_a=inp.load_a,
-                                    equipment_terminal_temp_c=inp.terminal_temp_c))
+                                    equipment_terminal_temp_c=inp.terminal_temp_c))  # None: lugs derives its own default
     return FeederResult(inp, status, info.table_name, options[0] if options else None, options[1:6], notes, lugs)

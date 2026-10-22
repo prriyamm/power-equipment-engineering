@@ -14,7 +14,8 @@ import json
 from dataclasses import asdict, dataclass, field
 
 from . import conductors as cond
-from .ampacity import DATA
+from . import validate
+from .ampacity import CODES, COLUMNS, DATA
 
 # Typical stud size and 2-hole spacing by conductor size for NEMA-pattern
 # compression lugs. [UNVERIFIED: industry practice from catalogue listings;
@@ -126,7 +127,14 @@ def _line(terminal: str, size: str, material: str, qty: int, termination: str) -
 
 def select_lugs(inp: LugInput) -> LugResult:
     size = cond.normalize_size(inp.size)
-    if inp.equipment_terminal_temp_c:
+    validate.one_of("code", inp.code, CODES)
+    validate.one_of("material", inp.material, tuple(cond.MATERIALS))
+    validate.integer_at_least("sets_per_phase", inp.sets_per_phase, 1)
+    validate.one_of("phases", inp.phases, (1, 3))
+    validate.positive("circuit_current_a", inp.circuit_current_a, "A")
+    if inp.equipment_terminal_temp_c is not None:
+        validate.one_of("equipment_terminal_temp_c", inp.equipment_terminal_temp_c, COLUMNS)
+    if inp.equipment_terminal_temp_c is not None:
         t_term, basis = inp.equipment_terminal_temp_c, "equipment marking"
     else:
         t_term, basis = default_terminal_temp(inp.code, inp.circuit_current_a, size)
