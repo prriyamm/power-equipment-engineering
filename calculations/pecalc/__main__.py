@@ -209,6 +209,9 @@ def run_case(a: argparse.Namespace) -> int:
         print(result.to_json())
     elif not a.report:
         print(f"{case.title or case.module}: {'PASS' if passed else 'FAIL'} (input hash {case.input_hash()})")
+    mismatch = case.engine_mismatch()
+    if mismatch:
+        print(f"warning: {mismatch}", file=sys.stderr)
     return 0 if passed else 1
 
 
@@ -250,6 +253,9 @@ def cablebus_design(a: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="pecalc", description="Power equipment engineering calculations")
+    from . import __version__
+    from .datainfo import data_fingerprint
+    p.add_argument("--version", action="version", version=f"pecalc {__version__}, table data {data_fingerprint()}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def common(s):

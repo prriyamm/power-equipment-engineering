@@ -28,7 +28,9 @@ python3 -m pecalc run ../examples/cablebus-15kv-2000a.json
 python3 -m pecalc run ../examples/cablebus-15kv-2000a.json --report cablebus-calc.html
 ```
 
-The report includes inputs, results, checks with code clauses, data-status warnings, the engine version and an input hash, and a Prepared / Checked / Approved block. Open it in a browser and print to PDF.
+The report includes inputs, results, checks with code clauses, data-status warnings, the engine version, an input hash, a fingerprint of the table data in `pecalc/data/`, and a Prepared / Checked / Approved block. Open it in a browser and print to PDF.
+
+Saved case files record the engine version and table data fingerprint that wrote them (`"engine"`). When a case is run with a different engine or different table data, the report and the CLI show a warning, because results can differ. `python3 -m pecalc --version` prints both.
 
 ## Test
 
