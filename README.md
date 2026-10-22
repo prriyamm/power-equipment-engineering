@@ -32,7 +32,7 @@ Early development, usable for engineering review. Working and tested (47 referen
 - **Lug selection**, design case files and printable calculation packages
 - **Desktop app** (Power Equipment Studio) with Windows installer, Linux and macOS builds
 
-**Code-table values were entered from memory and are marked UNVERIFIED**; CEC tables are placeholders and are refused until real values are entered. Every report flags UNVERIFIED data. Check the data against your licensed copies of the codes before relying on any result.
+**Code-table values were entered from memory and are marked UNVERIFIED**; CEC tables are placeholders and are refused until real values are entered. Every report flags UNVERIFIED data. Check the data against your licensed copies of the codes before relying on any result. [calculations/VERIFICATION.md](calculations/VERIFICATION.md) records what has been checked and is the sign-off sheet for engineers; the NEC tables were pre-checked against the NFPA 70-2023 pages (not a sign-off; status stays UNVERIFIED).
 
 ## Important
 

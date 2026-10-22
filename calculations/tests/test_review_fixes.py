@@ -242,18 +242,23 @@ class InvalidInputs(unittest.TestCase):
 
 
 class Table31016Aluminum8(unittest.TestCase):
-    """Fix 7: NEC Table 310.16 8 AWG Al (UNVERIFIED; public reprints of the table)."""
+    """NEC Table 310.16 8 AWG Al. Printed NFPA 70-2023, p. 70-187: 60 / 75 / 90 C = 35 / 40 / 45 A.
+    An earlier fix set 60 C to 30 A from secondary sources (older editions); that is reverted.
+    Data status stays UNVERIFIED until an engineer confirms (calculations/VERIFICATION.md)."""
 
     def test_8_awg_al_row(self):
-        # Reprints of Table 310.16: 8 AWG Al 60 / 75 / 90 C = 30 / 40 / 45 A (data previously had 35 A at 60 C).
         self.assertEqual([amp.table_ampacity("NEC", "raceway", "Al", "8", t) for t in (60, 75, 90)],
-                         [30.0, 40.0, 45.0])
+                         [35.0, 40.0, 45.0])
         self.assertEqual(amp.table_info("NEC", "raceway").status, "UNVERIFIED")
 
     def test_feeder_at_33a_al_60c(self):
-        # 33 A non-continuous Al, 60 C terminal: 8 AWG Al 60 C = 30 A < 33 A -> 6 AWG Al (60 C 40 A).
-        # Before the correction 8 AWG (35 A) was accepted.
+        # 33 A non-continuous Al, 60 C terminal: 8 AWG Al 60 C = 35 A >= 33 A -> 8 AWG Al.
         r = size_feeder(FeederInput(noncontinuous_a=33, material="Al", terminal_temp_c=60, length_m=5))
+        self.assertEqual(r.recommended.size, "8")
+
+    def test_feeder_at_36a_al_60c(self):
+        # 36 A non-continuous Al, 60 C terminal: 8 AWG Al 35 A < 36 A -> 6 AWG Al (60 C 40 A).
+        r = size_feeder(FeederInput(noncontinuous_a=36, material="Al", terminal_temp_c=60, length_m=5))
         self.assertEqual(r.recommended.size, "6")
 
 
