@@ -74,3 +74,44 @@ def x_over_r(name: str, value: float) -> float:
     if v <= 0:
         raise ValueError(f"{name} must be greater than 0, got {value!r}")
     return v
+
+
+def non_negative(name: str, value: float, unit: str = "") -> float:
+    """Value must be finite and >= 0."""
+    v = _finite(name, value)
+    if v < 0:
+        raise ValueError(f"{name} must be 0{' ' + unit if unit else ''} or greater, got {value!r}")
+    return v
+
+
+def positive(name: str, value: float, unit: str = "") -> float:
+    """Value must be finite and > 0."""
+    v = _finite(name, value)
+    if v <= 0:
+        raise ValueError(f"{name} must be greater than 0{' ' + unit if unit else ''}, got {value!r}")
+    return v
+
+
+def in_range(name: str, value: float, low: float, high: float, unit: str = "") -> float:
+    """Value must be finite and within [low, high]."""
+    v = _finite(name, value)
+    if not low <= v <= high:
+        raise ValueError(f"{name} must be in the range [{low:g}, {high:g}]{' ' + unit if unit else ''}, got {value!r}")
+    return v
+
+
+def integer_at_least(name: str, value: int, minimum: int) -> int:
+    """Value must be an integer (not bool, not a fractional float) >= minimum."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+            or value != int(value):
+        raise ValueError(f"{name} must be a whole number, got {value!r}")
+    if value < minimum:
+        raise ValueError(f"{name} must be {minimum} or greater, got {value!r}")
+    return int(value)
+
+
+def one_of(name: str, value, allowed: tuple) -> object:
+    """Value must be one of the allowed choices."""
+    if isinstance(value, bool) or value not in allowed:
+        raise ValueError(f"{name} must be one of {tuple(allowed)}, got {value!r}")
+    return value
