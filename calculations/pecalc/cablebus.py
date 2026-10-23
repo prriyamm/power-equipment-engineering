@@ -96,6 +96,9 @@ class CableBusInput:
     insulation_sc_limit_c: float = 250.0   # XLPE/EPR; use 150 for thermoplastic
     x_over_r: float = 15.0
     support_span_m: float = 0.9144     # block / support spacing along the run (36 in)
+    # Reaction factor k_r on F*L: "per_span" (1.0, each block takes one span; flexible cable, the default),
+    # "continuous" (1.1, rigid beam over 3+ equal spans, as switchgear.py), "pinned"/"fixed" (0.5, single span).
+    support_condition: str = "per_span"
     max_vd_pct: float = 3.0
     # Enclosure (optional): inside width/height around the conductor group.
     # Side rails are continuous along the run; covers/bottom are included only
@@ -214,6 +217,9 @@ def ambient_factor_checked(ambient_c: float, conductor_temp_c: int, rated_ambien
     return amp.ambient_factor(ambient_c, conductor_temp_c, rated_ambient_c)
 
 
+SUPPORT_REACTION = {"per_span": 1.0, "continuous": 1.1, "pinned": 0.5, "fixed": 0.5}
+
+
 def validate_input(inp: CableBusInput) -> None:
     """Range checks on the numeric inputs, with messages that name the input."""
     validate.voltage("voltage_v", inp.voltage_v)
@@ -224,6 +230,9 @@ def validate_input(inp: CableBusInput) -> None:
     validate.count_at_least("conductors_per_phase", inp.conductors_per_phase)
     if inp.fault_ka is not None:
         validate.non_negative("fault_ka", inp.fault_ka, "kA")
+    if inp.support_condition not in SUPPORT_REACTION:
+        raise ValueError(f"support_condition must be one of {', '.join(SUPPORT_REACTION)}, "
+                         f"got {inp.support_condition!r}")
 
 
 # --- cable library (manufacturer rows) --------------------------------------
@@ -973,10 +982,12 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
             share[i] = res.currents[i] / res.groups[cs[i].group].current
         fr = fault_forces(cs, share, inp.fault_ka, inp.x_over_r, inp.frequency_hz)
         f_nm, f_lbf = fr.worst_n_per_m, fr.worst_lbf_per_ft
-        support = fr.worst_n_per_m * inp.support_span_m / 4.44822
+        k_r = SUPPORT_REACTION[inp.support_condition]
+        support = fr.worst_n_per_m * inp.support_span_m * k_r / 4.44822
         notes.append(f"Fault: {inp.fault_ka} kA rms sym, X/R {inp.x_over_r}, first peak {fr.peak_current_ka:.1f} kA; "
                      f"worst conductor force {f_nm:.0f} N/m ({f_lbf:.0f} lbf/ft); load on one support over a "
-                     f"{inp.support_span_m:.3f} m span ~ {support:.0f} lbf (static; compare with tested block strength).")
+                     f"{inp.support_span_m:.3f} m span ({inp.support_condition}, k_r {k_r:g}) ~ {support:.0f} lbf "
+                     "(static; compare with tested block strength).")
         if inp.fault_clearing_s:
             # ICEA P-32-382 adiabatic withstand of all paralleled conductors of one phase (equal fault sharing).
             area = (spec.area_cmil if spec else cond.AREA_CMIL[size]) * inp.conductors_per_phase
