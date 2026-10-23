@@ -80,7 +80,8 @@ def cablebus(a: argparse.Namespace) -> int:
                         shield_bonding=a.shield_bonding, shield_area_mm2=a.shield_area,
                         shield_mean_diameter_mm=a.shield_diameter, shield_section_length_m=a.shield_section,
                         shield_voltage_limit_v=a.shield_voltage_limit, fault_ka=a.fault_ka,
-                        fault_clearing_s=a.fault_time, x_over_r=a.xr, support_span_m=a.support_span, max_vd_pct=a.max_vd,
+                        fault_clearing_s=a.fault_time, x_over_r=a.xr, support_span_m=a.support_span,
+                        support_condition=a.support_condition, max_vd_pct=a.max_vd,
                         enclosure_width_mm=a.enclosure_width, enclosure_height_mm=a.enclosure_height,
                         side_thickness_mm=a.side_mm, cover_thickness_mm=a.cover_mm,
                         covers_continuous=a.covers_continuous, enclosure_alloy=a.alloy,
@@ -322,6 +323,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="owner/utility limit for the open-end shield standing voltage, V (no default)")
     c.add_argument("--xr", type=float, default=15.0, help="X/R ratio at the fault point")
     c.add_argument("--support-span", type=float, default=0.9144, help="support/block spacing, m")
+    c.add_argument("--support-condition", choices=["per_span", "continuous", "pinned", "fixed"], default="per_span",
+                   help="support reaction factor k_r on F*L: 1.0, 1.1, 0.5, 0.5")
     c.add_argument("--enclosure-width", type=float, help="enclosure inside width, mm (enables housing model)")
     c.add_argument("--enclosure-height", type=float, help="enclosure inside height, mm")
     c.add_argument("--side-mm", type=float, default=6.35, help="side rail thickness, mm")

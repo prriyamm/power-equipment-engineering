@@ -1,6 +1,6 @@
 # TODO: support reaction factor differs between switchgear and cable bus
 
-Status: open, needs a decision. Neither module has been changed.
+Status: input added (branch feat/cablebus-support-condition). Cable bus now has `support_condition`: `per_span` (1.0, default, unchanged results), `continuous` (1.1), `pinned`/`fixed` (0.5). Which one is right for a given run is still an engineering decision; the tested block rating governs.
 
 | Module | Code | Support load under fault |
 |---|---|---|
