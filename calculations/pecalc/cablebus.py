@@ -84,6 +84,11 @@ class CableBusInput:
     shield_area_mm2: float | None = None   # copper tape/wire cross-section per cable
     shield_mean_diameter_mm: float | None = None
     shield_temp_c: float = 80.0
+    # Shield short-circuit withstand (optional): ground-fault current returning through the shields of the
+    # faulted phase's cables, shared equally, and the copper shield temperature limit [UNVERIFIED: 250 C is a
+    # typical figure; use the cable maker's value]. Needs fault_clearing_s and a shield area.
+    ground_fault_ka: float | None = None
+    shield_sc_limit_c: float = 250.0
     # Single-point bonding: length of one bonded (minor) section; the shield is grounded at one end of
     # each section and the standing voltage builds up to the open end. None = the whole run.
     shield_section_length_m: float | None = None
@@ -800,6 +805,11 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
         raise ValueError("shield_voltage_limit_v must be > 0")
     if inp.fault_clearing_s is not None:
         validate.clearing_time("fault_clearing_s", inp.fault_clearing_s)
+    if inp.ground_fault_ka is not None:
+        validate.positive("ground_fault_ka", inp.ground_fault_ka, "kA")
+    if inp.ground_fault_ka is not None and inp.shield_sc_limit_c <= inp.shield_temp_c:
+        raise ValueError(f"shield_sc_limit_c ({inp.shield_sc_limit_c:g} C) must exceed shield_temp_c "
+                         f"({inp.shield_temp_c:g} C)")
     spec = resolve_cable(inp)
     if spec is None:
         size = cond.normalize_size(inp.size)
@@ -993,7 +1003,23 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
                   "fault_ka is given but fault_clearing_s is not, so the conductor withstand cannot be checked; "
                   "give fault_clearing_s")
             notes.append("Conductor short-circuit withstand not checked: give fault_clearing_s.")
-        notes.append("Not checked: shield short-circuit withstand; mutual heating between stacked tiers.")
+        shield_area = inp.shield_area_mm2 or (math.pi * cons.shield_mean_diameter_mm * cons.shield_mm
+                                              if cons is not None and cons.shield_mm else None)
+        if inp.ground_fault_ka is not None and inp.fault_clearing_s and shield_area:
+            # Copper shield, adiabatic (same ICEA form as the conductor); 1 mm2 = 1973.525 cmil.
+            per_cable_ka = inp.ground_fault_ka / inp.conductors_per_phase
+            sh_ka = cond.adiabatic_withstand_a("Cu", shield_area * 1973.525, inp.shield_temp_c,
+                                               inp.shield_sc_limit_c, inp.fault_clearing_s) / 1000
+            check("Shield short-circuit withstand", "ICEA P-32-382 (copper shield)", sh_ka, per_cable_ka, "kA",
+                  sh_ka >= per_cable_ka,
+                  f"{shield_area:.1f} mm2 Cu shield per cable, {inp.fault_clearing_s} s clearing, "
+                  f"{inp.shield_temp_c}->{inp.shield_sc_limit_c} C; {inp.ground_fault_ka} kA ground fault shared "
+                  f"equally by {inp.conductors_per_phase} cables of the faulted phase")
+            notes.append("Not checked: mutual heating between stacked tiers.")
+        else:
+            why = ("give ground_fault_ka with the shield area" if inp.ground_fault_ka is None
+                   else "needs fault_clearing_s and a shield area")
+            notes.append(f"Not checked: shield short-circuit withstand ({why}); mutual heating between stacked tiers.")
 
     if with_shields:
         notes.append(f"Shields bonded both ends: max circulating current {shield_i:.0f} A, "
