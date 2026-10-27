@@ -603,3 +603,8 @@ class CableBusDesigner(unittest.TestCase):
         self.assertTrue(svg.startswith("<svg"))
         self.assertEqual(svg.count("<circle") - 3, 12)   # 12 cables + 3 legend dots
         self.assertIn("GPO-3", svg)
+        # Figure 3 trefoil (one cable on the top tier): the pitch is dimensioned on the tier below.
+        tre = CableBusInput(voltage_v=600, current_a=480, conductors_per_phase=1, size="750", pattern="+A/BC",
+                            enclosure_width_mm=400, enclosure_height_mm=300)
+        tre_r = analyse(tre)
+        self.assertIn(f"pitch {tre_r.pitch_mm:.0f} mm", cablebus_svg(tre, tre_r))

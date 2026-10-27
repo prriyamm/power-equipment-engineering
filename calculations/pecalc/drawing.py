@@ -76,8 +76,11 @@ def cablebus_svg(inp, result, block_material: str = "GPO-3", block_lip_mm: float
              "stroke='#333' marker-start='url(#a)' marker-end='url(#a)'/>")
     s.append(f"<text x='{xd + 8:.1f}' y='{Y(yc) - 4:.1f}'>inside height</text>")
     s.append(f"<text x='{xd + 8:.1f}' y='{Y(yc) + 12:.1f}'>{_mm_in(h_in)}</text>")
-    if len(rows) > 1:
-        a, b = sorted((c for c in rows if abs(c.y_mm - min(ys)) < 1e-6), key=lambda c: c.x_mm)[:2]
+    # Pitch dimension on the lowest tier with two cables (a Figure 3 trefoil has one cable on top).
+    tier_rows = [sorted((c for c in rows if abs(c.y_mm - ty) < 1e-3), key=lambda c: c.x_mm) for ty in tiers]
+    tier_rows = [t for t in tier_rows if len(t) > 1]
+    if tier_rows:
+        a, b = tier_rows[0][:2]
         yb = Y(a.y_mm) + od / 2 * scale + 18 + (block_lip_mm * scale)
         s.append(f"<line x1='{X(a.x_mm):.1f}' y1='{yb:.1f}' x2='{X(b.x_mm):.1f}' y2='{yb:.1f}' stroke='#333' "
                  "marker-start='url(#a)' marker-end='url(#a)'/>")
