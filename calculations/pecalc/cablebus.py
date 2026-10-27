@@ -54,11 +54,13 @@ class CableBusInput:
     cable_type: str = "standard"
     cable_id: str | None = None
     conductors_per_phase: int = 3
-    tiers: int = 1
+    tiers: int | None = None           # None: any; set to the tier count of the chosen pattern by analyse()
     cable_od_mm: float | None = None   # required above 2000 V; estimated for LV if omitted
     spacing_mm: float | None = None    # centre-to-centre in a tier; default 2 x OD (1 OD clearance)
     tier_spacing_mm: float | None = None  # centre-to-centre between tiers; default = spacing
-    pattern: str = "auto"              # e.g. "ABCCBA" or "ABCCBA/CBAABC" for tiers, or "auto"
+    # "auto": try the CSA 273 Figure 3 arrangements (with `tiers` tiers, if set) and keep the best current
+    # sharing. Or a pattern, e.g. "ABCAB/CABC." or "+ABCA/BCABC" (grammar at FIGURE3_FILE).
+    pattern: str = "auto"
     insulation_temp_c: int = 90
     # Equipment termination rating (NEC 110.14(C) / CEC 4-006). None = derive from the voltage: 75 C up to
     # 2000 V (NEC 110.14(C)(1)(b)), 90 C above 2000 V (NEC 110.40). An explicit value always wins.
@@ -220,7 +222,8 @@ def validate_input(inp: CableBusInput) -> None:
     validate.positive("current_a", inp.current_a, "A")
     validate.positive("length_m", inp.length_m, "m")
     validate.positive("frequency_hz", inp.frequency_hz, "Hz")
-    validate.count_at_least("tiers", inp.tiers)
+    if inp.tiers is not None:
+        validate.count_at_least("tiers", inp.tiers)
     validate.count_at_least("conductors_per_phase", inp.conductors_per_phase)
     if inp.fault_ka is not None:
         validate.non_negative("fault_ka", inp.fault_ka, "kA")
@@ -409,46 +412,95 @@ def _library_notes(inp: CableBusInput, spec: CableSpec, method: str) -> list[str
 
 # --- layout -----------------------------------------------------------------
 
-def candidate_patterns(n_per_phase: int, tiers: int) -> list[str]:
-    total = 3 * n_per_phase
-    if total % tiers:
-        raise ValueError(f"{total} conductors cannot be split evenly into {tiers} tiers")
-    per_tier = total // tiers
-    if per_tier % 3:
-        raise ValueError(f"Each tier needs a multiple of 3 conductors (got {per_tier})")
-    k = per_tier // 3
-    seq = "ABC" * k
-    mirrored = "".join("ABC" if i % 2 == 0 else "CBA" for i in range(k))
-    rows = {
-        "sequential": [seq] * tiers,
-        "mirrored": [mirrored] * tiers,
-        "mirrored, alternate tiers reversed": [mirrored if t % 2 == 0 else mirrored[::-1] for t in range(tiers)],
-        "mirrored, alternate tiers rotated": [
-            mirrored if t % 2 == 0 else mirrored.translate(str.maketrans("ABC", "CAB")) for t in range(tiers)],
-    }
-    out = []
-    for r in rows.values():
-        p = "/".join(r)
-        if p not in out:
-            out.append(p)
+# Phase arrangements of CSA C22.2 No. 273 Figure 3. Pattern grammar (also for a user pattern): tiers top to
+# bottom separated by '/', '.' = unused position, a leading '+' shifts the tier right by half a pitch.
+FIGURE3_FILE = amp.DATA / "csa273_figure3.json"
+FIGURE3_REF = "CSA/ANSI C22.2 No. 273:19 Figure 3 (Clauses 4.12.2.1.1, 4.12.3.1, 4.13)"
+
+
+@functools.lru_cache(maxsize=1)
+def _figure3() -> dict:
+    return json.loads(FIGURE3_FILE.read_text(encoding="utf-8"))
+
+
+def figure3_patterns(n_per_phase: int, tiers: int | None = None) -> list[str]:
+    """Figure 3 arrangements for n conductors per phase (all, or only those with this many tiers)."""
+    pats = _figure3()["arrangements"].get(str(n_per_phase), [])
+    return [p for p in pats if tiers is None or p.count("/") + 1 == tiers]
+
+
+def candidate_patterns(n_per_phase: int, tiers: int | None = None) -> list[str]:
+    """Patterns tried by pattern 'auto': the Figure 3 arrangements, filtered by tier count when given."""
+    pats = figure3_patterns(n_per_phase, tiers)
+    if pats:
+        return pats
+    have = figure3_patterns(n_per_phase)
+    if not have:
+        raise ValueError(f"CSA 273 Figure 3 covers 1 to 10 conductors per phase (got {n_per_phase}): give a "
+                         "pattern (an arrangement outside Figure 3 needs the Clause 4.12.4 temperature-rise test)")
+    counts = sorted({p.count("/") + 1 for p in have})
+    raise ValueError(f"CSA 273 Figure 3 has no arrangement of {n_per_phase} conductors per phase in {tiers} "
+                     f"tier(s); it has {' or '.join(map(str, counts))} tiers. Change tiers or give a pattern.")
+
+
+def parse_pattern(pattern: str) -> list[tuple[float, str]]:
+    """Tiers of a pattern as (offset in pitches, positions), top tier first."""
+    rows = []
+    for row in pattern.upper().split("/"):
+        off = 0.5 if row.startswith("+") else 0.0
+        body = row[1:] if off else row
+        if not body or set(body) - set(PHASES + (".",)):
+            raise ValueError(f"Pattern {pattern!r}: each tier is A, B, C or '.' (unused position), with an "
+                             "optional leading '+' for a half-pitch shift; tiers are separated by '/'")
+        rows.append((off, body))
+    return rows
+
+
+def pattern_positions(pattern: str) -> list[tuple[float, int, str, int]]:
+    """Occupied positions as (x in pitches, tier, phase, position index); x starts at 0."""
+    pos = [(off + i, t, ph, i) for t, (off, body) in enumerate(parse_pattern(pattern))
+           for i, ph in enumerate(body) if ph != "."]
+    x0 = min(p[0] for p in pos)
+    return [(x - x0, t, ph, i) for x, t, ph, i in pos]
+
+
+def _shapes(pattern: str) -> set[frozenset]:
+    """Geometry of a pattern under mirror image and vertical flip, with the phase names dropped: each shape is
+    the set of positions of each phase group."""
+    pos = [(round(2 * x), t, ph) for x, t, ph, _ in pattern_positions(pattern)]
+    xm, tm = max(p[0] for p in pos), max(p[1] for p in pos)
+    out = set()
+    for fx, ft in itertools.product((False, True), repeat=2):
+        groups = {}
+        for x, t, ph in pos:
+            groups.setdefault(ph, set()).add((xm - x if fx else x, tm - t if ft else t))
+        out.add(frozenset(frozenset(g) for g in groups.values()))
     return out
 
 
-def _check_pattern(pattern: str, n_per_phase: int, tiers: int) -> list[str]:
-    rows = pattern.upper().split("/")
-    if len(rows) != tiers:
+def figure3_match(pattern: str, n_per_phase: int) -> str | None:
+    """Figure 3 arrangement this pattern is (same positions per phase group, up to phase naming, mirror image and
+    vertical flip), as 'n-k' (k = order in the figure), or None."""
+    mine = _shapes(pattern)
+    for k, p in enumerate(figure3_patterns(n_per_phase), 1):
+        if mine & _shapes(p):
+            return f"{n_per_phase}-{k}"
+    return None
+
+
+def _check_pattern(pattern: str, n_per_phase: int, tiers: int | None) -> list[tuple[float, str]]:
+    rows = parse_pattern(pattern)
+    if tiers is not None and len(rows) != tiers:
         raise ValueError(f"Pattern {pattern!r} has {len(rows)} tiers, expected {tiers}")
-    flat = "".join(rows)
+    flat = "".join(body for _, body in rows)
     for p in PHASES:
         if flat.count(p) != n_per_phase:
             raise ValueError(f"Pattern {pattern!r} must contain {n_per_phase} x {p}")
-    if set(flat) - set(PHASES):
-        raise ValueError("Pattern may contain only A, B, C and '/'")
     return rows
 
 
 def build_layout(inp: CableBusInput, pattern: str, od: float, spec: CableSpec | None = None) -> list[Conductor]:
-    rows = _check_pattern(pattern, inp.conductors_per_phase, inp.tiers)
+    _check_pattern(pattern, inp.conductors_per_phase, inp.tiers)
     pitch = inp.spacing_mm or 2 * od
     tier_pitch = inp.tier_spacing_mm or pitch
     if spec is None:
@@ -459,10 +511,8 @@ def build_layout(inp: CableBusInput, pattern: str, od: float, spec: CableSpec | 
         r_core = cond.rac_from_rdc_ohm_per_m(_library_rdc_ohm_per_m(spec, inp.insulation_temp_c), spec.diameter_mm,
                                              inp.frequency_hz, spacing_mm=pitch)
         gmr = cond.gmr_from_diameter_mm(spec.diameter_mm)
-    out = []
-    for t, row in enumerate(rows):
-        for i, ph in enumerate(row):
-            out.append(Conductor(i * pitch, t * tier_pitch, ph, r_core, gmr, f"{ph}{t}{i}"))
+    out = [Conductor(x * pitch, t * tier_pitch, ph, r_core, gmr, f"{ph}{t}{i}")
+           for x, t, ph, i in pattern_positions(pattern)]
     if inp.shield_bonding == "both_ends":
         if not (inp.shield_area_mm2 and inp.shield_mean_diameter_mm):
             raise ValueError("shield_area_mm2 and shield_mean_diameter_mm are required for both-ends bonding")
@@ -473,6 +523,10 @@ def build_layout(inp: CableBusInput, pattern: str, od: float, spec: CableSpec | 
     if inp.enclosure_width_mm:
         out += enclosure_filaments(inp, out, od)
     return out
+
+
+class EnclosureTooSmall(ValueError):
+    """The given enclosure does not hold the conductor group of a pattern."""
 
 
 def enclosure_filaments(inp: CableBusInput, cores: list[Conductor], od: float) -> list[Conductor]:
@@ -490,7 +544,7 @@ def enclosure_filaments(inp: CableBusInput, cores: list[Conductor], od: float) -
     xc, yc = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
     w, h = inp.enclosure_width_mm, inp.enclosure_height_mm or (max(ys) - min(ys) + 2 * od)
     if w < max(xs) - min(xs) + od or h < max(ys) - min(ys) + od:
-        raise ValueError(f"Enclosure {w:.0f} x {h:.0f} mm is smaller than the conductor group "
+        raise EnclosureTooSmall(f"Enclosure {w:.0f} x {h:.0f} mm is smaller than the conductor group "
                          f"({max(xs) - min(xs) + od:.0f} x {max(ys) - min(ys) + od:.0f} mm)")
     rho = AL_ALLOYS[inp.enclosure_alloy] * (1 + AL_ALPHA * (inp.enclosure_temp_c - 20))
     n = inp.enclosure_filaments
@@ -837,14 +891,26 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
     patterns = (candidate_patterns(inp.conductors_per_phase, inp.tiers) if inp.pattern == "auto"
                 else [inp.pattern.upper()])
     scored = []
+    too_small = None
     for p in patterns:
-        cs = build_layout(inp, p, od, spec)
+        try:
+            cs = build_layout(inp, p, od, spec)
+        except EnclosureTooSmall as e:
+            # 'auto' skips the arrangements that do not fit the given enclosure.
+            too_small = too_small or e
+            continue
         res = solve_sharing(cs, _groups(inp, with_shields), inp.frequency_hz)
         phase_idx = [i for i, c in enumerate(cs) if c.group in PHASES]
         scored.append((p, cs, res, max(res.share_pct(i) for i in phase_idx), sum(res.losses_w_per_m)))
+    if not scored:
+        raise too_small if len(patterns) == 1 else EnclosureTooSmall(
+            f"No CSA 273 Figure 3 arrangement of {inp.conductors_per_phase} conductors per phase fits the "
+            f"enclosure (first: {too_small})")
     scored.sort(key=lambda s: (round(s[3], 1), s[4]))
     pattern, cs, res, _, _ = scored[0]
     compared = [PatternScore(p, round(m, 1), round(l, 2)) for p, _, _, m, l in scored]
+    inp.tiers = pattern.count("/") + 1
+    fig3 = figure3_match(pattern, inp.conductors_per_phase)
 
     pitch = inp.spacing_mm or 2 * od
     labels = {c.label: i for i, c in enumerate(cs)}
@@ -945,11 +1011,19 @@ def analyse(inp: CableBusInput, compare_bonding: bool = True) -> CableBusResult:
         check("Minimum size for paralleled conductors", clauses["parallel"], cond.size_index(size),
               cond.size_index(min_size), "size index", cond.size_index(size) >= cond.size_index(min_size),
               f"min {cond.size_label(min_size)}")
+    check("Phase arrangement from CSA C22.2 No. 273 Figure 3", FIGURE3_REF, 1.0 if fig3 else 0.0, 1.0,
+          "match", fig3 is not None,
+          f"pattern {pattern} is Figure 3 arrangement {fig3} (same positions per phase group, up to phase naming "
+          "and mirror image)" if fig3 else
+          f"pattern {pattern} is not a Figure 3 arrangement for {inp.conductors_per_phase} conductors per phase: "
+          "the free-air ampacity basis needs a Figure 3 arrangement or the Clause 4.12.4 temperature-rise test")
     if method == "table":
         check("Spacing for free-air ampacity basis (>= 1 cable diameter clearance)",
               "NEC 370.80 / CEC 12-2252 [UNVERIFIED]", pitch - od, od, "mm", pitch - od >= od - 1e-6)
         if inp.tiers > 1:
-            tier_pitch = inp.tier_spacing_mm or pitch      # centre-to-centre, same convention as spacing_mm
+            # Centre-to-centre, same convention as spacing_mm. A staggered tier sits half a pitch over, so its
+            # nearest cable is further away than tier_pitch: checking tier_pitch is conservative.
+            tier_pitch = inp.tier_spacing_mm or pitch
             check("Tier spacing for free-air ampacity basis (>= 1 cable diameter clearance between tiers)",
                   "NEC 370.80 / CEC 12-2252 [UNVERIFIED]", tier_pitch - od, od, "mm",
                   tier_pitch - od >= od - 1e-6)

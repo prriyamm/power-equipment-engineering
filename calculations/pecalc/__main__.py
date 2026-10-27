@@ -294,11 +294,13 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--current", type=float, required=True, help="rated current per phase, A")
     c.add_argument("--size", required=True, help="conductor size, e.g. 750 or 4/0")
     c.add_argument("--per-phase", type=int, required=True, help="conductors per phase")
-    c.add_argument("--tiers", type=int, default=1)
+    c.add_argument("--tiers", type=int, default=None, help="tiers (default: any CSA 273 Figure 3 arrangement)")
     c.add_argument("--od", type=float, help="cable outside diameter, mm (required above 2000 V)")
     c.add_argument("--spacing", type=float, help="centre spacing in a tier, mm (default 2 x OD)")
     c.add_argument("--tier-spacing", type=float, help="centre spacing between tiers, mm")
-    c.add_argument("--pattern", default="auto", help="e.g. ABCCBA or ABCCBA/CBAABC, default: try several")
+    c.add_argument("--pattern", default="auto",
+                   help="e.g. ABCAB/CABC. or +ABCA/BCABC ('.' unused position, leading '+' half-pitch shift), "
+                        "default: best CSA 273 Figure 3 arrangement")
     c.add_argument("--terminal-temp", type=int, choices=[60, 75, 90], default=None,
                    help="termination rating, C (default: 75 up to 2000 V, 90 above)")
     c.add_argument("--ampacity-method", choices=["auto", "table", "datasheet", "calculated"], default="auto",

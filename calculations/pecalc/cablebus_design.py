@@ -1,10 +1,11 @@
 """Cable bus designer: generate, check and rank complete design options.
 
 For a required voltage and current, every practical combination of conductor
-size, conductors per phase and stacked tiers (1 to 4) is laid out with the
+size, conductors per phase and stacked tiers that CSA C22.2 No. 273 Figure 3
+has an arrangement for (1 to 10 per phase, 1 to 3 tiers) is laid out with the
 code spacing (one cable diameter clear between cables and between tiers,
 NEC 370 / CSA C22.2 No. 273 free-air basis), fitted into the smallest standard
-enclosure, and run through the full cable bus analysis (phase-pattern search,
+enclosure, and run through the full cable bus analysis (best Figure 3 pattern,
 current sharing, ampacity, enclosure induced current, voltage drop). The best
 options are then checked for short-circuit forces on the support blocks.
 
@@ -19,8 +20,9 @@ from dataclasses import asdict, dataclass, field, replace
 
 from . import conductors as cond
 from . import validate
-from .cablebus import (CableBusInput, analyse, construction, default_terminal_temp_c, per_cable_ampacity,
-                       require_ambient_below, resolve_method, termination_ampacity)
+from .cablebus import (CableBusInput, analyse, construction, default_terminal_temp_c, figure3_patterns,
+                       pattern_positions, per_cable_ampacity, require_ambient_below, resolve_method,
+                       termination_ampacity)
 from .thermal import free_air_ampacity
 
 # Typical support-block laminate properties (MPa). [UNVERIFIED: typical NEMA LI 1 / supplier
@@ -157,9 +159,10 @@ def _estimate_ampacity(base: CableBusInput, od: float) -> float:
     return per_cable_ampacity(base)[0]
 
 
-def _fit_enclosure(req: DesignRequest, per_tier: int, tiers: int, od: float) -> tuple[float, float] | None:
+def _fit_enclosure(req: DesignRequest, span: float, tiers: int, od: float) -> tuple[float, float] | None:
+    """Smallest catalogue enclosure for a layout `span` pitches wide (outer cable centres) and `tiers` high."""
     pitch = 2 * od
-    need_w = (per_tier - 1) * pitch + od + 2 * req.edge_clearance_mm
+    need_w = span * pitch + od + 2 * req.edge_clearance_mm
     need_h = (tiers - 1) * pitch + od + 2 * req.block_lip_mm + 2 * req.vertical_clearance_mm
     best = None
     for w in req.enclosure_widths_in:
@@ -208,12 +211,18 @@ def design_options(req: DesignRequest) -> DesignResult:
         if n_min > req.max_per_phase:
             notes.append(f"{cond.size_label(size)}: needs {n_min} per phase (> {req.max_per_phase}); skipped.")
             continue
+        if not figure3_patterns(n_min):
+            notes.append(f"{cond.size_label(size)}: needs {n_min} per phase; CSA 273 Figure 3 covers 1 to 10; "
+                         "skipped.")
+            continue
         for n in range(n_min, min(req.max_per_phase, n_min + req.extra_per_phase) + 1):
             for tiers in req.tier_options:
-                if (3 * n) % tiers or ((3 * n) // tiers) % 3:
+                pats = figure3_patterns(n, tiers)
+                if not pats:
                     continue
-                per_tier = 3 * n // tiers
-                fit = _fit_enclosure(req, per_tier, tiers, od)
+                # Widest Figure 3 arrangement with this tier count, in pitches (analyse picks among them).
+                span = max(max(x for x, *_ in pattern_positions(p)) for p in pats)
+                fit = _fit_enclosure(req, span, tiers, od)
                 if fit is None:
                     continue
                 considered += 1
