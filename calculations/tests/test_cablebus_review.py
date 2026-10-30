@@ -253,3 +253,30 @@ class Item11EngineeringSupervisionClause(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SupportCondition(unittest.TestCase):
+    """Support reaction factor k_r on F*L (P10): per_span 1.0, continuous 1.1, pinned/fixed 0.5."""
+
+    def _load(self, **kw):
+        return analyse(CableBusInput(**LV, fault_ka=65.0, support_span_m=0.9144, **kw)).support_load_lbf
+
+    def test_default_is_per_span_and_unchanged(self):
+        self.assertEqual(self._load(), self._load(support_condition="per_span"))
+
+    def test_factors_scale_the_support_load(self):
+        base = self._load(support_condition="per_span")
+        for cond, k in (("continuous", 1.1), ("pinned", 0.5), ("fixed", 0.5)):
+            self.assertAlmostEqual(self._load(support_condition=cond), base * k, delta=0.06 + base * 1e-4)
+
+    def test_continuous_matches_switchgear_reaction(self):
+        from pecalc.switchgear import SPAN
+        self.assertEqual(SPAN["continuous"][1], 1.1)
+
+    def test_note_names_condition(self):
+        r = analyse(CableBusInput(**LV, fault_ka=65.0, support_condition="continuous"))
+        self.assertIn("continuous, k_r 1.1", _notes(r))
+
+    def test_unknown_condition_rejected(self):
+        with self.assertRaisesRegex(ValueError, "support_condition must be one of"):
+            analyse(CableBusInput(**LV, fault_ka=65.0, support_condition="cantilever"))
