@@ -14,6 +14,11 @@ from pecalc.forces import fault_forces, peak_factor
 from pecalc.impedance import Conductor, balanced_three_phase, solve_sharing
 from pecalc.sizing import FeederInput, size_feeder
 
+
+def _named(result, prefix):
+    """The check whose name starts with prefix."""
+    return next(c for c in result.checks if c["name"].startswith(prefix))
+
 OHM_KFT = 1000 * cond.FT  # ohm/m -> ohm/1000 ft
 
 
@@ -136,37 +141,73 @@ class Forces(unittest.TestCase):
 
 
 class CableBus(unittest.TestCase):
-    def test_patterns_generated(self):
-        self.assertIn("ABCCBA", candidate_patterns(2, 1))
-        with self.assertRaises(ValueError):
-            candidate_patterns(2, 4)
+    def test_auto_patterns_are_figure3(self):
+        # CSA C22.2 No. 273 Figure 3: 3 arrangements for 2 per phase (all 2 tiers), 5 for 3 per phase.
+        self.assertEqual(candidate_patterns(2), ["ABC/CAB", "ABC/BCA", "ABC/CBA"])
+        self.assertEqual(candidate_patterns(3, 3), ["ACA/BBB/CAC", "+ABC/BCA./+ABC"])
+        self.assertEqual(candidate_patterns(1, 1), ["ABC"])
+        with self.assertRaisesRegex(ValueError, "no arrangement of 2 conductors per phase in 1 tier"):
+            candidate_patterns(2, 1)
+        with self.assertRaisesRegex(ValueError, "covers 1 to 10 conductors per phase"):
+            candidate_patterns(11)
 
-    def test_four_tier_patterns_and_validation(self):
-        # 4 tiers: 3n conductors split into 4 tiers of 3n/4, each a multiple of 3 -> n multiple of 4.
-        pats = candidate_patterns(4, 4)       # 12 conductors, 3 per tier, k = 1
-        self.assertIn("ABC/ABC/ABC/ABC", pats)
-        self.assertIn("ABC/CBA/ABC/CBA", pats)
-        for p in pats:
-            rows = p.split("/")
-            self.assertEqual(len(rows), 4)
-            self.assertTrue(all(len(r) == 3 for r in rows))
-        pats8 = candidate_patterns(8, 4)      # 24 conductors, 6 per tier, k = 2
-        self.assertIn("ABCCBA/ABCCBA/ABCCBA/ABCCBA", pats8)
-        for n in (1, 2, 3, 5, 6, 7):
-            if (3 * n) % 4:
-                with self.assertRaisesRegex(ValueError, "cannot be split evenly into 4 tiers"):
-                    candidate_patterns(n, 4)
+    def test_figure3_data(self):
+        from pecalc.cablebus import _check_pattern, figure3_match, figure3_patterns
+        for n in range(1, 11):
+            pats = figure3_patterns(n)
+            self.assertGreaterEqual(len(pats), 2)
+            for p in pats:
+                rows = _check_pattern(p, n, None)            # n of each phase, valid grammar
+                self.assertLessEqual(len(rows), 3)            # Clause 4.12.2: 3 layers maximum
+                self.assertIsNotNone(figure3_match(p, n))
+        # The figure itself lists ABC/BCA beside ABC/CAB: the same groups, mirrored and renamed.
+        self.assertEqual(figure3_match("ABC/BCA", 2), "2-1")
+        self.assertEqual(figure3_match("BCA", 1), "1-1")           # phase naming
+        self.assertEqual(figure3_match(".CABC/BACBA", 3), "3-3")   # mirror image of CBAC./ABCAB
+        self.assertIsNone(figure3_match("ABCCBA", 2))                # single row: not in Figure 3
+        self.assertIsNone(figure3_match("ABCABCABC", 3))
 
-    def test_four_tier_analysis(self):
-        # 8 x 750 kcmil per phase in 4 tiers of 6 (3 x 8 = 24 conductors).
-        r = analyse(CableBusInput(voltage_v=600, current_a=4000, conductors_per_phase=8, tiers=4, size="750",
-                                  enclosure_width_mm=500, enclosure_height_mm=500))
-        self.assertEqual(len(r.conductors), 24)
+    def test_pattern_grammar(self):
+        from pecalc.cablebus import pattern_positions
+        # '+' shifts a tier half a pitch; '.' is an unused position; x starts at 0.
+        self.assertEqual(pattern_positions("+A/BC"), [(0.5, 0, "A", 0), (0.0, 1, "B", 0), (1.0, 1, "C", 1)])
+        self.assertEqual(pattern_positions(".AB/C.."), [(1.0, 0, "A", 1), (2.0, 0, "B", 2), (0.0, 1, "C", 0)])
+        with self.assertRaisesRegex(ValueError, "optional leading"):
+            pattern_positions("AB+C")
+
+    def test_staggered_layout(self):
+        r = analyse(CableBusInput(voltage_v=600, current_a=1500, conductors_per_phase=3, size="750",
+                                  pattern="+ABCA/BCABC"))
+        top = sorted(c.x_mm for c in r.conductors if c.tier == 0)
+        bottom = sorted(c.x_mm for c in r.conductors if c.tier == 1)
+        self.assertAlmostEqual(top[0], round(r.pitch_mm / 2, 1), delta=0.06)
+        self.assertAlmostEqual(bottom[0], 0.0)
+        self.assertEqual(len(top) + len(bottom), 9)
+        self.assertTrue(_named(r, "Phase arrangement")["passed"])
+
+    def test_pattern_outside_figure3_fails_the_check(self):
+        # 4 x 750 kcmil per phase in 4 tiers: a valid layout, but not a Figure 3 arrangement.
+        r = analyse(CableBusInput(voltage_v=600, current_a=2000, conductors_per_phase=4, size="750",
+                                  pattern="ABC/ABC/ABC/ABC", enclosure_width_mm=500, enclosure_height_mm=500))
+        self.assertEqual(len(r.conductors), 12)
         self.assertEqual(sorted({c.tier for c in r.conductors}), [0, 1, 2, 3])
-        self.assertAlmostEqual(r.tier_pitch_mm, r.pitch_mm)
-        self.assertAlmostEqual(sum(c.current_a for c in r.conductors if c.phase == "A"), 4000, delta=0.5)
-        with self.assertRaisesRegex(ValueError, "cannot be split evenly into 4 tiers"):
-            analyse(CableBusInput(voltage_v=600, conductors_per_phase=6, tiers=4))
+        self.assertAlmostEqual(sum(c.current_a for c in r.conductors if c.phase == "A"), 2000, delta=0.5)
+        c = _named(r, "Phase arrangement")
+        self.assertFalse(c["passed"])
+        self.assertIn("4.12.4", c["note"])
+        self.assertFalse(r.passed)
+        with self.assertRaisesRegex(ValueError, "no arrangement of 8 conductors per phase in 4 tier"):
+            analyse(CableBusInput(voltage_v=600, conductors_per_phase=8, tiers=4))
+
+    def test_auto_skips_arrangements_that_do_not_fit(self):
+        # 3 tiers of 750 kcmil (OD ~ 29 mm, pitch ~ 59 mm) are ~ 147 mm high: a 120 mm enclosure takes 2 tiers.
+        r = analyse(CableBusInput(voltage_v=600, current_a=3000, conductors_per_phase=4, size="750",
+                                  enclosure_width_mm=800, enclosure_height_mm=120))
+        self.assertEqual(r.input.tiers, 2)
+        self.assertTrue(all(p.pattern.count("/") == 1 for p in r.patterns_compared))
+        with self.assertRaisesRegex(ValueError, "No CSA 273 Figure 3 arrangement"):
+            analyse(CableBusInput(voltage_v=600, current_a=3000, conductors_per_phase=4, size="750",
+                                  enclosure_width_mm=800, enclosure_height_mm=60))
 
     def test_reference_concept_4000a(self):
         # Reference design: 4000 A, 600 V, 6 x 750 kcmil Cu per phase.
@@ -254,7 +295,8 @@ class DatasheetShieldDerating(unittest.TestCase):
 
     def test_both_ends_bonding_derates_by_own_lambda1(self):
         from pecalc.cablebus import datasheet_shield_derating
-        r = analyse(CableBusInput(**self.BASE, shield_bonding="both_ends"))
+        # A flat single row (not a Figure 3 arrangement) has a large enough shield loss to exceed 10 %.
+        r = analyse(CableBusInput(**self.BASE, shield_bonding="both_ends", pattern="ABCCBAABC"))
         self.assertLess(max(c.ampacity_a for c in r.conductors), 900.0)
         lam = float(r.ampacity_basis.split("lambda1 ")[1].split()[0])
         worst = max(r.conductors, key=lambda c: c.loading_pct)
@@ -500,37 +542,42 @@ class CableBusDesigner(unittest.TestCase):
         r = design_options(DesignRequest(voltage_v=600, current_a=4000))
         passing = [o for o in r.options if o.passed]
         self.assertGreaterEqual(len(passing), 3)
+        from pecalc.cablebus import figure3_match, pattern_positions
         for o in passing:
             self.assertLessEqual(o.max_loading_pct, 95.0)
-            per_tier = 3 * o.per_phase // o.tiers
-            needed_w = (per_tier - 1) * 2 * o.cable_od_mm + o.cable_od_mm + 2 * 25
+            self.assertIsNotNone(figure3_match(o.pattern, o.per_phase))
+            span = max(x for x, *_ in pattern_positions(o.pattern))
+            needed_w = span * 2 * o.cable_od_mm + o.cable_od_mm + 2 * 25
             self.assertGreaterEqual(o.inside_w_mm + 2.0, needed_w)  # OD is reported rounded
         tags = {t for o in r.options for t in o.tags}
         self.assertTrue({"least copper", "smallest enclosure", "most margin"} <= tags)
 
-    def test_designer_includes_four_tier_options(self):
+    def test_designer_uses_figure3_tiers_only(self):
         from pecalc.cablebus_design import DesignRequest, design_options
+        # Figure 3 has no 4-tier arrangement, so tier option 4 adds nothing; 1 tier exists only for 1 per phase.
         self.assertEqual(DesignRequest().tier_options, (1, 2, 3, 4))
-        r = design_options(DesignRequest(voltage_v=600, current_a=6000, top_n=30))
-        four = [o for o in r.options if o.tiers == 4]
-        self.assertTrue(four, "expected a 4-tier option for 6000 A")
-        self.assertTrue(all(o.per_phase % 4 == 0 for o in four))
-        r3 = design_options(DesignRequest(voltage_v=600, current_a=6000, tier_options=(1, 2, 3)))
-        self.assertTrue(all(o.tiers <= 3 for o in r3.options))
+        r = design_options(DesignRequest(voltage_v=600, current_a=4000, top_n=30))
+        self.assertTrue(r.options)
+        self.assertTrue(all(o.tiers in (2, 3) for o in r.options))
+        r2 = design_options(DesignRequest(voltage_v=600, current_a=4000, tier_options=(2,)))
+        self.assertTrue(r2.options)
+        self.assertTrue(all(o.tiers == 2 for o in r2.options))
+        # Beyond 10 per phase Figure 3 has no arrangement: the size is skipped with a note.
+        r3 = design_options(DesignRequest(voltage_v=600, current_a=4500, sizes=("500",)))   # 12 x 380 A
+        self.assertTrue(any("Figure 3 covers 1 to 10" in n for n in r3.notes))
 
     def test_more_tiers_gives_narrower_enclosure(self):
         from pecalc.cablebus_design import DesignRequest, design_options
         # 2000 A (was 4000 A): with the termination limit now taken from Table 310.16 (380 A per 500 kcmil
-        # conductor at 75 C), 4000 A needs 11+ per phase and no 1-tier layout fits the enclosure catalogue.
+        # conductor at 75 C), 4000 A needs 11+ per phase, beyond Figure 3.
         r = design_options(DesignRequest(voltage_v=600, current_a=2000, sizes=("500",), top_n=20))
         widths = {}
         for o in r.options:
             widths.setdefault(o.per_phase, {})[o.tiers] = o.inside_w_mm
-        pairs = [(w[1], max(t for t in w if t > 1), w[max(t for t in w if t > 1)])
-                 for w in widths.values() if 1 in w and len(w) > 1]
-        self.assertTrue(pairs, "expected a design available in 1 tier and in 2 or 3 tiers")
-        for one_tier, _, stacked in pairs:
-            self.assertLess(stacked, one_tier)
+        pairs = [w for w in widths.values() if 2 in w and 3 in w]
+        self.assertTrue(pairs, "expected a design available in 2 and in 3 tiers")
+        for w in pairs:
+            self.assertLess(w[3], w[2])
 
     def test_mv_needs_construction_and_checks_blocks(self):
         from pecalc.cablebus_design import DesignRequest, design_options
@@ -556,3 +603,8 @@ class CableBusDesigner(unittest.TestCase):
         self.assertTrue(svg.startswith("<svg"))
         self.assertEqual(svg.count("<circle") - 3, 12)   # 12 cables + 3 legend dots
         self.assertIn("GPO-3", svg)
+        # Figure 3 trefoil (one cable on the top tier): the pitch is dimensioned on the tier below.
+        tre = CableBusInput(voltage_v=600, current_a=480, conductors_per_phase=1, size="750", pattern="+A/BC",
+                            enclosure_width_mm=400, enclosure_height_mm=300)
+        tre_r = analyse(tre)
+        self.assertIn(f"pitch {tre_r.pitch_mm:.0f} mm", cablebus_svg(tre, tre_r))

@@ -97,7 +97,8 @@ class Item4TierSpacing(unittest.TestCase):
         self.assertTrue(_check(r, "Tier spacing")["passed"])
 
     def test_single_tier_has_no_tier_check(self):
-        r = analyse(CableBusInput(voltage_v=600.0, current_a=1000.0, conductors_per_phase=3, size="500"))
+        # One per phase is the only Figure 3 case with a single-tier arrangement (ABC).
+        r = analyse(CableBusInput(voltage_v=600.0, current_a=300.0, conductors_per_phase=1, size="500", tiers=1))
         self.assertIsNone(_check(r, "Tier spacing"))
 
 
@@ -124,7 +125,11 @@ class Item5FaultWithoutClearingTime(unittest.TestCase):
         long_ = design_options(DesignRequest(**base, fault_clearing_s=5.0))
         self.assertTrue(any(o.passed for o in short.options))
         self.assertFalse(any(o.passed for o in long_.options))
-        self.assertTrue(all(any(WITHSTAND in f for f in o.failed_checks) for o in long_.options))
+        # The fault checks run on the options that pass the other checks; an option that already failed one
+        # (here the termination rating) is listed without them.
+        prelim = [o for o in long_.options if not any("termination" in f for f in o.failed_checks)]
+        self.assertTrue(prelim)
+        self.assertTrue(all(any(WITHSTAND in f for f in o.failed_checks) for o in prelim))
         self.assertEqual(short.options[0].case_inputs["fault_clearing_s"], 0.05)
 
 

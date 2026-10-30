@@ -16,8 +16,11 @@ from pecalc.cablebus_sim import (SimInput, build_context, enclosure_surface_temp
 from pecalc.forces import fault_forces, peak_factor
 from pecalc.thermal import CableConstruction, free_air_ampacity
 
+# CSA 273 Figure 3 arrangement 4-1. Pinned because the best Figure 3 arrangement (4-2) shares current equally
+# and is mirror symmetric, which leaves no single worst cable for these tests.
 BUS = dict(voltage_v=600.0, current_a=3000.0, conductors_per_phase=4, size="750", fault_ka=50.0,
-           fault_clearing_s=0.5, x_over_r=15.0, enclosure_width_mm=800.0, enclosure_height_mm=120.0)
+           fault_clearing_s=0.5, x_over_r=15.0, enclosure_width_mm=800.0, enclosure_height_mm=120.0,
+           pattern="ABCABC/CABCAB")
 
 
 class AdiabaticTemperature(unittest.TestCase):
