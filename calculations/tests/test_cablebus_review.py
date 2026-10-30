@@ -253,3 +253,38 @@ class Item11EngineeringSupervisionClause(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShieldWithstand(unittest.TestCase):
+    """Shield short-circuit withstand (P17): copper shield, adiabatic, ground fault shared by the phase's cables."""
+
+    NAME = "Shield short-circuit withstand"
+
+    def _run(self, **kw):
+        return analyse(CableBusInput(**{**MV, "fault_ka": 40.0, "fault_clearing_s": 0.5, **kw}))
+
+    def test_not_checked_without_ground_fault(self):
+        r = self._run(shield_area_mm2=35.0)
+        self.assertIsNone(_check(r, self.NAME))
+        self.assertIn("Not checked: shield short-circuit withstand", _notes(r))
+
+    def test_matches_adiabatic_formula(self):
+        from pecalc import conductors as cond
+        r = self._run(shield_area_mm2=35.0, ground_fault_ka=9.0)
+        c = _check(r, self.NAME)
+        expect = cond.adiabatic_withstand_a("Cu", 35.0 * 1973.525, 80.0, 250.0, 0.5) / 1000
+        self.assertAlmostEqual(c["value"], expect, delta=0.01)
+        self.assertAlmostEqual(c["limit"], 3.0, places=6)      # 9 kA over 3 cables
+        self.assertTrue(c["passed"])
+
+    def test_small_shield_fails(self):
+        c = _check(self._run(shield_area_mm2=5.0, ground_fault_ka=30.0), self.NAME)
+        self.assertFalse(c["passed"])
+
+    def test_needs_clearing_time(self):
+        r = self._run(shield_area_mm2=35.0, ground_fault_ka=9.0, fault_clearing_s=None)
+        self.assertIsNone(_check(r, self.NAME))
+
+    def test_limit_must_exceed_start_temp(self):
+        with self.assertRaisesRegex(ValueError, "shield_sc_limit_c"):
+            self._run(shield_area_mm2=35.0, ground_fault_ka=9.0, shield_sc_limit_c=70.0)
